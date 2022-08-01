@@ -1,0 +1,31 @@
+module tap {
+  control {
+    set_solver_option(":mbqi", false);
+    set_solver_option(":case_split", 0);
+    set_solver_option(":relevancy", 0);
+    set_solver_option(":threads", 4);
+    set_solver_option(":blast_full", true);
+
+    // paddr_conflict_verif = verify(does_paddr_conflict);                     //passes
+    // enclave_conflict_verif = verify(does_enclave_conflict);                 //passes
+    // set_addr_map_verif = verify(set_addr_map);                              //no assertions to check
+    // get_enclave_addr_map_verif = verify(get_enclave_addr_map);              //no assertions to check
+    // set_enclave_addr_map_verif = verify(set_enclave_addr_map);              //no assertions to check
+    tap_init_verif = verify(initialize_tap);                                //passes
+    tap_clone_verif = verify(clone);                                           //passes
+    destroy_verif = verify(destroy);                                        //passes
+    enter_verif  = verify(enter);                                           //passes
+    exit_verif   = verify(exit);                                            //passes
+    launch_verif = verify(launch);                                          //passes
+    pause_verif  = verify(pause);                                           //passes
+    resume_verif = verify(resume);                                          //passes
+    snapshot_verif = verify(snapshot);                                      //passes
+    block_memory_verif = verify(block_memory_region);                       //passes
+    release_memory_verif = verify(release_blocked_memory);                  //passes
+    // tap_addr_valid_proofs_verif = verify(tap_addr_valid_proofs);            //passes
+    init_havoc_verif = verify(InitialHavoc);                                //passes                            
+
+    check;
+    print_results;
+  }
+}

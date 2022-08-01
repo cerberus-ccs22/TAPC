@@ -1,0 +1,20 @@
+/*  Integrity proof related functions, TAP initialization and transition relation
+*/
+module tap {
+  input tap_iter: integer;
+
+  var tap_vaddr: vaddr_t;
+  var tap_paddr: wap_addr_t;
+  var tap_data: word_t;
+
+  //======================================================================//
+  // Initial state                                                        //
+  //======================================================================//
+  init {
+    tap_current_mode = mode_untrusted;
+    tap_enclave_dead = false;
+    tap_vaddr = k0_vaddr_t;
+    tap_paddr = k0_wap_addr_t;
+    tap_data = k0_word_t;
+  }
+}

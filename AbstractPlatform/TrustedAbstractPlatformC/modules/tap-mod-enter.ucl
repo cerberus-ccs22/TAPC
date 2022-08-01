@@ -1,0 +1,100 @@
+module tap {
+  //
+  // Enter an enclave
+  //
+  procedure [noinline] enter(eid: tap_enclave_id_t)
+    returns (status : enclave_op_result_t)
+    //----------------------------------------------------------------------//
+    // Global TAP invariants                                                //
+    //----------------------------------------------------------------------//
+    requires (forall (pa : wap_addr_t, e : tap_enclave_id_t) ::
+                (valid_enclave_id(e) && !tap_enclave_metadata_valid[e]) ==> 
+                    (cpu_owner_map[pa] != e));
+    ensures  (forall (pa : wap_addr_t, e : tap_enclave_id_t) ::
+                (valid_enclave_id(e) && !tap_enclave_metadata_valid[e]) ==> 
+                    (cpu_owner_map[pa] != e));
+
+    //----------------------------------------------------------------------//
+    // Conditions for success or failure                                    //
+    //----------------------------------------------------------------------//
+    ensures ((valid_enclave_id(eid))                   &&
+             (tap_enclave_metadata_valid[eid])         &&
+             (old(cpu_enclave_id) == tap_null_enc_id)  &&
+             !tap_enclave_metadata_is_snapshot[eid]) ==> (status == enclave_op_success);
+    ensures ((!valid_enclave_id(eid))                  ||
+             (!tap_enclave_metadata_valid[eid])        ||
+             (old(cpu_enclave_id) != tap_null_enc_id)  ||
+             tap_enclave_metadata_is_snapshot[eid]) ==> (status == enclave_op_invalid_arg);
+
+    //----------------------------------------------------------------------//
+    // The status can only be success and invalid arguement                 //
+    //----------------------------------------------------------------------//
+    ensures (status == enclave_op_success || status == enclave_op_invalid_arg);
+
+    //----------------------------------------------------------------------//
+    // Nothing changes on failure                                           //
+    //----------------------------------------------------------------------//
+    ensures (status != enclave_op_success ==> cpu_enclave_id == old(cpu_enclave_id));
+    ensures (status != enclave_op_success ==> cpu_addr_valid == old(cpu_addr_valid));
+    ensures (status != enclave_op_success ==> cpu_addr_map == old(cpu_addr_map));
+    ensures (status != enclave_op_success ==> cpu_pc == old(cpu_pc));
+    ensures (status != enclave_op_success ==> untrusted_regs == old(untrusted_regs));
+    ensures (status != enclave_op_success ==> untrusted_addr_valid == old(untrusted_addr_valid));
+    ensures (status != enclave_op_success ==> untrusted_addr_map == old(untrusted_addr_map));
+    ensures (status != enclave_op_success ==> untrusted_pc == old(untrusted_pc));
+
+    //----------------------------------------------------------------------//
+    // State updates on success                                             //
+    //----------------------------------------------------------------------//
+    ensures (status == enclave_op_success) ==> (untrusted_pc == old(cpu_pc));
+    ensures (status == enclave_op_success) ==> (untrusted_regs == old(cpu_regs));
+    ensures (status == enclave_op_success) ==> (untrusted_addr_valid == old(cpu_addr_valid));
+    ensures (status == enclave_op_success) ==> (untrusted_addr_map == old(cpu_addr_map));
+    ensures (status == enclave_op_success) ==> (cpu_enclave_id == eid);
+    ensures (status == enclave_op_success) ==> (cpu_pc == tap_enclave_metadata_entrypoint[eid]);
+    ensures (status == enclave_op_success) ==> (cpu_addr_valid == tap_enclave_metadata_addr_valid[eid]);
+    ensures (status == enclave_op_success) ==> (cpu_addr_map == tap_enclave_metadata_addr_map[eid]);
+    ensures (tap_addr_perm_x(old(cpu_addr_valid)[old(cpu_pc)])
+              ==> (status == enclave_op_success
+                    ==> tap_addr_perm_x(untrusted_addr_valid[untrusted_pc])));    
+    ensures (cpu_regs == old(cpu_regs));
+
+    //-----------------------------------------------------------------------//
+    // Modifies statements                                                   //
+    //-----------------------------------------------------------------------//
+    modifies untrusted_regs;
+    modifies untrusted_addr_valid;
+    modifies untrusted_addr_map;
+    modifies untrusted_pc;
+    modifies cpu_enclave_id;
+    modifies cpu_addr_map;
+    modifies cpu_addr_valid;
+    modifies cpu_pc;
+    modifies cpu_regs;
+  {
+    // 1. No enclave id is null
+    // 2. Enclave must be valid and not paused
+    // 3. CPU must be ready to execute the enclave
+    // 4. Enclave is not a snapshot
+    if (!valid_enclave_id(eid)              ||
+        !tap_enclave_metadata_valid[eid]    ||
+        cpu_enclave_id != tap_null_enc_id   ||
+        tap_enclave_metadata_is_snapshot[eid])
+    {
+      status = enclave_op_invalid_arg;
+    } else {
+      status                  = enclave_op_success;
+      // save context
+      untrusted_regs          = cpu_regs;
+      untrusted_addr_valid    = cpu_addr_valid;
+      untrusted_addr_map      = cpu_addr_map;
+      untrusted_pc            = cpu_pc;
+      // restore enclave context
+      call set_cpu_state(eid,
+                         tap_enclave_metadata_addr_map[eid],
+                         tap_enclave_metadata_addr_valid[eid],
+                         tap_enclave_metadata_entrypoint[eid],
+                         cpu_regs);
+    }
+  }
+}

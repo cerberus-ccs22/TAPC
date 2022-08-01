@@ -1,0 +1,77 @@
+module tap {
+  procedure [inline] IntegrityAdversarialStep(
+      /* mode       */ mode       : mode_t,
+      /* EuT        */ eid        : tap_enclave_id_t,
+      /* Adversary  */ r_eid      : tap_enclave_id_t,
+      /* Parent     */ r_parent_eid : tap_enclave_id_t,
+      /* args       */ r_regs     : regs_t,
+      /* operation  */ op         : tap_proof_op_t
+  )
+    returns (next_mode : mode_t, enclave_dead : boolean)
+    modifies untrusted_addr_valid;
+    modifies untrusted_addr_map;
+    modifies untrusted_regs;
+    modifies untrusted_pc;
+    modifies tap_enclave_metadata_valid;
+    modifies tap_enclave_metadata_addr_map;
+    modifies tap_enclave_metadata_addr_valid;
+    modifies tap_enclave_metadata_addr_excl;
+    modifies tap_enclave_metadata_entrypoint;
+    modifies tap_enclave_metadata_pc;
+    modifies tap_enclave_metadata_regs;
+    modifies tap_enclave_metadata_paused;
+    modifies tap_enclave_metadata_cache_conflict;
+    modifies tap_enclave_metadata_is_snapshot;
+    modifies tap_enclave_metadata_child_count;
+    modifies tap_enclave_metadata_root_snapshot;
+    modifies tap_enclave_metadata_wap_addr_free;
+    modifies cpu_pc;
+    modifies cpu_mem;
+    modifies cpu_regs;
+    modifies cpu_addr_valid;
+    modifies cpu_addr_map;
+    modifies cpu_owner_map;
+    modifies cpu_enclave_id;
+    modifies cache_valid_map, cache_tag_map;
+  {
+    var status            : enclave_op_result_t;
+    var r_addr_valid      : addr_valid_t;
+    var r_addr_map        : addr_map_t;
+    var r_excl_vaddr      : excl_vaddr_t;
+    var r_excl_map        : excl_map_t;
+    var r_container_valid : container_valid_t;
+    var r_container_data  : container_data_t;
+    var r_entrypoint      : vaddr_t;
+    var r_vaddr           : vaddr_t;
+    var r_valid           : addr_perm_t;
+    var r_excp            : exception_t;
+    var r_paddr           : wap_addr_t;
+    var r_word            : word_t;
+    var r_bmap            : excl_map_t;
+    var hit               : boolean;
+    var way               : cache_way_index_t;
+
+    // the "default" value which may be overwritten by enter/resume
+    next_mode = mode;
+    // the "default" value which may be overwritten by destroy.
+    enclave_dead = false;
+
+    assume (op == tap_proof_op_destroy);
+
+    // destroy.
+    call (status) = destroy(r_eid);
+    if (r_eid == eid && status == enclave_op_success) {
+        enclave_dead = true;
+    }
+    assert(mode == mode_untrusted ==> next_mode != mode_enclave);
+  }
+
+  //======================================================================//
+  // Transition relation                                                  //
+  //======================================================================//
+  next {
+    assume (tap_current_mode == mode_untrusted);
+    call (tap_current_mode', tap_enclave_dead') =
+      IntegrityAdversarialStep(tap_current_mode, tap_eid, tap_r_eid, tap_r_parent_eid, tap_r_regs, tap_r_proof_op);
+  } 
+}

@@ -1,0 +1,51 @@
+/*  Confidentiality proof related functions, TAP initialization and transition relation
+
+    The current file only contains the init block and variable declarations. The
+    transition relation is located inside the tap-mod-conf folder.
+*/
+module tap {
+  const tap_observer 							: observer_t;
+
+  input tap_r_pc                  : vaddr_t;
+  input tap_r_read                : regindex_t;
+  input tap_r_write               : regindex_t;
+  input tap_r_data                : word_t;
+  input tap_l_vaddr               : vaddr_t;
+  input tap_s_vaddr               : vaddr_t;
+  input tap_s_data                : word_t;
+  input tap_r_pt_eid              : tap_enclave_id_t; 
+  input tap_r_pt_va               : vaddr_t;
+  input tap_pt_eid                : tap_enclave_id_t;
+  input tap_pt_vaddr              : vaddr_t;
+  input tap_pt_valid              : addr_perm_t;
+  input tap_pt_paddr              : wap_addr_t;
+  input tap_r_addr_valid          : addr_valid_t;
+  input tap_r_addr_map            : addr_map_t;
+  input tap_r_excl_vaddr          : excl_vaddr_t;
+  input tap_r_excl_map            : excl_map_t;
+  input tap_r_container_valid     : container_valid_t;
+  input tap_r_container_data      : container_data_t;
+  input tap_r_entrypoint          : vaddr_t;
+  input tap_r_bmap                : excl_map_t;
+  input tap_r_l_way, tap_r_s_way  : cache_way_index_t;
+
+  var tap_status: enclave_op_result_t;
+  var tap_excp_1, tap_excp_2: exception_t;
+  var tap_hit_1, tap_hit_2: boolean;
+  var tap_store_way: cache_way_index_t;
+
+  output tap_observation       : word_t;
+  output tap_store_addr			   : vaddr_t;
+  output tap_store_data			   : word_t;
+  output tap_load_addr         : vaddr_t;
+  output tap_l_way, tap_s_way : cache_way_index_t;
+
+  //======================================================================//
+  // Initial state                                                        //
+  //======================================================================//
+
+  init {
+    tap_current_mode = mode_untrusted;
+    tap_enclave_dead = false;
+  }
+}

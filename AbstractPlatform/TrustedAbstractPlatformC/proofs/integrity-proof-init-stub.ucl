@@ -1,0 +1,5 @@
+module integrity_proof {
+	init {
+		verif = false;
+	}
+}

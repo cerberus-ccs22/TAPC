@@ -1,0 +1,17 @@
+module tap {
+  //======================================================================//
+  // Transition relation                                                  //
+  //======================================================================//
+  next {
+    case
+      (tap_current_mode == mode_untrusted) : {
+        call (tap_current_mode', tap_enclave_dead') =
+          IntegrityAdversarialStep(tap_current_mode, tap_eid, tap_r_eid, tap_r_regs, tap_r_proof_op);
+      }
+      (tap_current_mode == mode_enclave) : {
+        call (tap_current_mode', tap_vaddr', tap_paddr', tap_data') =
+          IntegrityEnclaveStep(tap_e_proof_op, tap_iter);
+      }
+    esac
+  }	
+}

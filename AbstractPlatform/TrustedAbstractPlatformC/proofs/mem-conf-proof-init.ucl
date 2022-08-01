@@ -1,0 +1,224 @@
+module mem_confidentiality_proof {
+  // Verify the initial state
+  axiom verif;
+
+  type create_enclave_op_t = enum {
+      create_by_launch,
+      create_by_clone
+  };
+
+  init {
+    var excp_1_1, excp_1_2, excp_2_1, excp_2_2       : exception_t;
+    var hit_1_1, hit_1_2, hit_2_1, hit_2_2           : boolean;
+    var create_op: create_enclave_op_t;
+
+    // initialize proof variables
+    enclave_dead = false;
+    enclave_dead_1 = false;
+    enclave_dead_2 = false;
+
+    // initialize state of first cpu
+    call (current_mode) = cpu_1.InitialHavoc();
+    
+    // Sanity check: The current PC is executable
+    assert tap_addr_perm_x(cpu_1.cpu_addr_valid[cpu_1.cpu_pc]);
+
+    // Sanity check:
+    // FIXME: Should check that the current pc is owned by tap_null_enc_id
+    // NOTE:  The main issue is that InitialHavoc does not have this invariant.
+    //        It does not satisfy this because clone doesn't. What happens during clone
+    //        is that memory from the null enclave needs to be assinged to an enclave, which means
+    //        that the PC owned by the null enclave can be assigned to the new cloned enclave,
+    //        and hence the owner would no longer be `cpu_enclave_id`'s (null enclave's)
+    //        To fix this, we may need to check that null enclave's memory is free first.
+    // assert (cpu_1.cpu_owner_map[cpu_1.cpu_addr_map[cpu_1.cpu_pc]] == cpu_1.cpu_enclave_id);
+    
+    // After initial havoc by the adversary, no enclave should be running
+    assert cpu_1.cpu_enclave_id == tap_null_enc_id;
+ 
+    // Initialize the untrusted (OS) state with sane values.
+    call cpu_1.InitUntrustedState(cpu_1.cpu_addr_valid, cpu_1.cpu_addr_map, cpu_1.cpu_pc);
+
+    // Set CPU2 to have the same initial states as CPU1
+    call cpu_2.SetInitState(
+      cpu_1.cpu_mem,
+      cpu_1.cpu_regs,
+      cpu_1.cpu_pc,
+      cpu_1.cpu_enclave_id,
+      cpu_1.cpu_addr_valid,
+      cpu_1.cpu_addr_map,
+      cpu_1.cpu_owner_map,
+      cpu_1.cache_valid_map, 
+      cpu_1.cache_tag_map,
+      cpu_1.untrusted_addr_valid,
+      cpu_1.untrusted_addr_map,
+      cpu_1.untrusted_regs,
+      cpu_1.untrusted_pc,
+      cpu_1.tap_enclave_metadata_valid,
+      cpu_1.tap_enclave_metadata_addr_map,
+      cpu_1.tap_enclave_metadata_addr_valid,
+      cpu_1.tap_enclave_metadata_addr_excl,
+      cpu_1.tap_enclave_metadata_entrypoint,
+      cpu_1.tap_enclave_metadata_pc,
+      cpu_1.tap_enclave_metadata_regs,
+      cpu_1.tap_enclave_metadata_paused,
+      cpu_1.tap_enclave_metadata_cache_conflict,
+      cpu_1.tap_enclave_metadata_is_snapshot,
+      cpu_1.tap_enclave_metadata_child_count,
+      cpu_1.tap_enclave_metadata_root_snapshot,
+      cpu_1.tap_enclave_metadata_wap_addr_free
+    );
+
+    // Launch should not leave the PC in an untenable sitation
+    assume !e_excl_map[cpu_1.cpu_addr_map[cpu_1.cpu_pc]];
+
+    // Initialize OS memory for both traces
+    call cpu_1.InitOSMem(e_excl_map, e_container_data_1);
+    call cpu_2.InitOSMem(e_excl_map, e_container_data_2);
+
+    // Initialize OS memory for the root snapshot in both traces
+    // The memory should be the same here; we assume the snapshot is public
+    call cpu_1.InitOSMem(e_root_excl_map, e_container_data);
+    call cpu_2.InitOSMem(e_root_excl_map, e_container_data);
+
+    case
+      (create_op == create_by_launch) : {
+        // now launch enclave_1
+        call (status) = cpu_1.launch(eid, e_addr_valid_1, e_addr_map_1,
+                              e_excl_vaddr_1, e_excl_map, e_entrypoint_1);
+        assume cpu_1.tap_enclave_metadata_cache_conflict[eid] == cache_conflict;
+        assume status == enclave_op_success;
+
+        // and then enclave_2
+        call (status) = cpu_2.launch(eid, e_addr_valid_2, e_addr_map_2,
+                              e_excl_vaddr_2, e_excl_map, e_entrypoint_2);
+        assume cpu_2.tap_enclave_metadata_cache_conflict[eid] == cache_conflict;
+        assume status == enclave_op_success;
+      }
+      (create_op == create_by_clone) : {
+        var parent_root_snapshot: tap_enclave_id_t;
+
+        // Get the root snapshot of `eid`. This is either going to be `r_parent_eid`
+        // if it's a snapshot or the root of `r_parent_eid`.
+        parent_root_snapshot = if (valid_enclave_id(r_parent_eid) && cpu_1.tap_enclave_metadata_is_snapshot[r_parent_eid])
+                                then (r_parent_eid)
+                                else if (valid_enclave_id(cpu_1.tap_enclave_metadata_root_snapshot[r_parent_eid]))
+                                then (cpu_1.tap_enclave_metadata_root_snapshot[r_parent_eid])
+                                else tap_invalid_enc_id;
+
+        // Sanity check: the parent root snapshot should be a snapshot
+        assert (valid_enclave_id(parent_root_snapshot) ==>
+                  cpu_1.tap_enclave_metadata_is_snapshot[parent_root_snapshot]);
+  
+        // Assume the parent or root snapshot's memory ownership to be the same
+        assume (forall (p: wap_addr_t) :: (e_root_excl_map[p] <==>
+                  ((cpu_1.cpu_owner_map[p] == parent_root_snapshot || cpu_1.cpu_owner_map[p] == r_parent_eid) &&
+                   (cpu_2.cpu_owner_map[p] == parent_root_snapshot || cpu_2.cpu_owner_map[p] == r_parent_eid))));
+
+        // Assume the parent or root snapshot's memory to be the same
+        assume (valid_enclave_id(parent_root_snapshot) ==>
+                  (forall (pa: wap_addr_t) :: (e_root_excl_map[pa] ==> cpu_1.cpu_mem[pa] == cpu_2.cpu_mem[pa])));
+
+        // Assume that the parent is identical in both traces
+        assume (tap_metadata_equal(r_parent_eid));
+
+        // If the parent has a root snapshot, it's also identical
+        assume (tap_metadata_equal(parent_root_snapshot));
+        
+        // The enclave in the parent traces owns PA defined by e_root_excl_map
+        assume (forall (pa: wap_addr_t) :: 
+                      ((cpu_1.cpu_owner_map[pa] == cpu_1.tap_enclave_metadata_root_snapshot[eid]) <==>
+                        e_root_excl_map[pa]));
+        assume (forall (pa: wap_addr_t) :: 
+                      ((cpu_2.cpu_owner_map[pa] == cpu_2.tap_enclave_metadata_root_snapshot[eid]) <==>
+                        e_root_excl_map[pa]));
+
+        // Clone `eid` in trace 1
+        call (status) = cpu_1.clone(eid, r_parent_eid, e_excl_map);
+        assume status == enclave_op_success;
+  
+        // Clone `eid` in trace 2
+        call (status) = cpu_2.clone(eid, r_parent_eid, e_excl_map);
+        assume status == enclave_op_success;
+      }
+    esac
+
+
+    assert valid_enclave_id(eid);
+
+    // initial value of the observations.
+    observation_1 = k0_word_t;
+    observation_2 = k0_word_t;
+
+    //assert(false);
+
+    assert (current_mode == mode_untrusted);
+    assert (cpu_1.cpu_enclave_id == tap_null_enc_id);
+    current_mode = mode_untrusted;
+
+    // The adversary does not call clone on the protected eid
+    assume (r_parent_eid != eid);
+    assume (r_parent_eid == cpu_1.tap_r_parent_eid && r_parent_eid == cpu_1.tap_r_parent_eid);
+
+    // if (!enclave_dead) {
+    //   havoc r_proof_op;   havoc r_eid;    havoc r_pc;   havoc r_read;   havoc r_write;
+    //   havoc r_data;       havoc l_vaddr;  havoc s_vaddr;  havoc s_data;   havoc r_pt_eid;
+    //   havoc r_pt_va;      havoc pt_eid;   havoc pt_vaddr; havoc pt_valid; havoc  pt_paddr;
+    //   havoc r_addr_valid; havoc r_addr_map; havoc r_excl_vaddr; havoc r_excl_map;
+    //   havoc r_bmap;     havoc r_container_valid; havoc r_container_data; havoc r_entrypoint;
+    //   havoc r_l_way;    havoc  r_s_way;
+
+    //   assume valid_regindex(r_read);
+    //   assume valid_regindex(r_write);
+    //   assume valid_cache_way_index(r_l_way);
+    //   assume valid_cache_way_index(r_s_way);
+
+    //   // assert (forall (va : vaddr_t) ::
+    //   //           (cpu_1.tap_enclave_metadata_addr_excl[r_parent_eid][va] ==>
+    //               // (cpu_1.cpu_mem[cpu_1.tap_enclave_metadata_addr_map[r_parent_eid][va]] == cpu_2.cpu_mem[cpu_2.tap_enclave_metadata_addr_map[r_parent_eid][va]])));
+
+    //   // trace_1
+    //   // call (observation_1, current_mode_1, enclave_dead_1, status_1, excp_1_1, excp_1_2, hit_1_1, hit_1_2) =
+    //   //                         cpu_1.ObserverStep(k_mem_observer_t, current_mode, eid, r_eid, r_parent_eid, r_proof_op, 
+    //   //                                     r_pc, r_read, r_write, r_data, 
+    //   //                                     l_vaddr, s_vaddr, s_data,
+    //   //                                     r_pt_eid, r_pt_va,
+    //   //                                     pt_eid, pt_vaddr, pt_valid, pt_paddr,
+    //   //                                     r_addr_valid, r_addr_map, r_excl_vaddr,
+    //   //                                     r_excl_map, r_container_valid, r_container_data,
+    //   //                                     r_entrypoint, r_bmap,
+    //   //                                     r_l_way, r_s_way);
+
+    //   // assert (status_1 == enclave_op_success) ==>
+    //   //         (forall (pa: wap_addr_t) :: (r_excl_map[pa] ==> cpu_1.cpu_owner_map[pa] == r_eid));
+    //   // assert (status_1 == enclave_op_success) ==>
+    //   //         (forall (pa: wap_addr_t) ::
+    //   //           ((r_excl_map[pa] && !cpu_1.tap_enclave_metadata_addr_excl[pa]) ==>
+    //   //             (cpu_1.cpu_mem[pa] == cpu_2.cpu_mem[pa])));
+    //   // assert (status_1 == enclave_op_success) ==>
+    //   //         (forall (pa : wap_addr_t) :: (!e_excl_map[pa]) ==> (cpu_1.cpu_mem[pa] == cpu_2.cpu_mem[pa]));
+
+    //   // // trace_2
+    //   // call (observation_2, current_mode_2, enclave_dead_2, status_2, excp_2_1, excp_2_2, hit_2_1, hit_2_2) =
+    //   //                         cpu_2.ObserverStep(k_mem_observer_t, current_mode, eid, r_eid, r_parent_eid, r_proof_op, 
+    //   //                                     r_pc, r_read, r_write, r_data, 
+    //   //                                     l_vaddr, s_vaddr, s_data,
+    //   //                                     r_pt_eid, r_pt_va,
+    //   //                                     pt_eid, pt_vaddr, pt_valid, pt_paddr,
+    //   //                                     r_addr_valid, r_addr_map, r_excl_vaddr,
+    //   //                                     r_excl_map, r_container_valid, r_container_data,
+    //   //                                     r_entrypoint, r_bmap,
+    //   //                                     r_l_way, r_s_way);
+
+    //   // some sanity checks.
+    //   // assert status_1 == status_2;
+    //   assert current_mode_1 == current_mode_2;
+    //   assert enclave_dead_1 == enclave_dead_2;
+    //   current_mode = current_mode_1;
+    //   enclave_dead = enclave_dead_1;
+
+    //   // assert(false);
+    // }
+    // assert(false);
+  }
+}

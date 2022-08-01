@@ -1,0 +1,120 @@
+module tap {
+  //======================================================================//
+  // Observer operation                                                   //
+  //======================================================================//
+  procedure [inline] ObserverStep(
+    /* observer          */ observer          : observer_t,
+    /* Current mode      */ mode              : mode_t,
+    /* Secret Enclave    */ eid               : tap_enclave_id_t,
+    /* Adversary Enclave */ r_eid             : tap_enclave_id_t,
+    /* Parent Enclave    */ r_parent_eid      : tap_enclave_id_t,
+    /* Operation.        */ op                : tap_proof_op_t,
+    /* next PC value.    */ r_pc              : vaddr_t,
+    /* reg to read.      */ r_read            : regindex_t,
+    /* reg to write      */ r_write           : regindex_t,
+    /* data to write     */ r_data            : word_t,
+    /* mem. to read.     */ l_vaddr           : vaddr_t,
+    /* mem to write      */ s_vaddr           : vaddr_t,
+    /* data to write     */ s_data            : word_t,
+    /* pt entry to read  */ r_pt_eid          : tap_enclave_id_t, 
+    /* pt entry to read  */ r_pt_va           : vaddr_t,
+    /* pt eid            */ pt_eid            : tap_enclave_id_t,
+    /* pt vaddr          */ pt_vaddr          : vaddr_t,
+    /* pt valid          */ pt_valid          : addr_perm_t,
+    /* pt paddr          */ pt_paddr          : wap_addr_t,
+    /* VA->PA valid      */ r_addr_valid      : addr_valid_t,
+    /* VA->PA map        */ r_addr_map        : addr_map_t,
+    /* VA->excl map      */ r_excl_vaddr      : excl_vaddr_t,
+    /* Private Mem Map   */ r_excl_map        : excl_map_t,
+    /* Container Valid   */ r_container_valid : container_valid_t,
+    /* Container Data    */ r_container_data  : container_data_t,
+    /* Entrypoint        */ r_entrypoint      : vaddr_t,
+    /* blocked mem       */ r_bmap            : excl_map_t,
+    /* ways to change.   */ l_way, s_way      : cache_way_index_t)
+
+    returns (observation: word_t, next_mode : mode_t, enclave_dead : boolean, status : enclave_op_result_t, excp_1 : exception_t, excp_2 : exception_t, hit_1 : boolean, hit_2 : boolean)
+    // PC stays reasonable.
+    // Don't mess up TAP invariants.
+    requires valid_regindex(r_read);
+    requires valid_regindex(r_write);
+    requires (observer == k_mem_observer_t   || 
+              observer == k_cache_observer_t ||
+              observer == k_pt_observer_t);
+
+    requires valid_cache_way_index(s_way);
+    requires valid_cache_way_index(l_way);
+
+    ensures (op == tap_proof_op_compute) ==> 
+                (cpu_enclave_id == old(cpu_enclave_id) &&
+                 tap_enclave_metadata_valid == old(tap_enclave_metadata_valid) &&
+                 tap_enclave_metadata_addr_excl == old(tap_enclave_metadata_addr_excl));
+
+    modifies untrusted_addr_valid;
+    modifies untrusted_addr_map;
+    modifies untrusted_regs;
+    modifies untrusted_pc;
+    modifies tap_enclave_metadata_valid;
+    modifies tap_enclave_metadata_addr_map;
+    modifies tap_enclave_metadata_addr_valid;
+    modifies tap_enclave_metadata_addr_excl;
+    modifies tap_enclave_metadata_entrypoint;
+    modifies tap_enclave_metadata_pc;
+    modifies tap_enclave_metadata_regs;
+    modifies tap_enclave_metadata_paused;
+    modifies tap_enclave_metadata_cache_conflict;
+    modifies tap_enclave_metadata_wap_addr_free;
+    modifies cache_valid_map, cache_tag_map;
+    modifies cpu_mem;
+    modifies cpu_enclave_id;
+    modifies cpu_addr_map;
+    modifies cpu_addr_valid;
+    modifies cpu_pc;
+    modifies cpu_regs;
+    modifies cpu_owner_map;
+  {
+      // "default" for the next mode.
+      next_mode = mode;
+      // "default" for whether we kill enclave eid.
+      enclave_dead = false;
+
+      // start with a dummy observation.
+      observation = k0_word_t;
+      status = enclave_op_success;
+      havoc excp_1;
+      havoc excp_2;
+      assume (excp_1 != excp_none);
+      assume (excp_2 != excp_none);
+      hit_1 = false;
+      hit_2 = false;
+
+      assume (op == tap_proof_op_release);
+
+      call (status) = release_blocked_memory(r_bmap);
+  }
+  //======================================================================//
+  // Transition relation                                                  //
+  //======================================================================//
+
+  next {
+    assume (tap_current_mode == mode_untrusted);
+    call (tap_observation', tap_current_mode',
+              tap_enclave_dead', tap_status',
+              tap_excp_1', tap_excp_2',
+              tap_hit_1', tap_hit_2') = ObserverStep(
+                  tap_observer, tap_current_mode,
+                  tap_eid, tap_r_eid,
+                  tap_r_parent_eid,
+                  tap_r_proof_op, 
+                  tap_r_pc, tap_r_read,
+                  tap_r_write, tap_r_data, 
+                  tap_l_vaddr, tap_s_vaddr, tap_s_data,
+                  tap_r_pt_eid, tap_r_pt_va,
+                  tap_pt_eid, tap_pt_vaddr,
+                  tap_pt_valid, tap_pt_paddr,
+                  tap_r_addr_valid, tap_r_addr_map,
+                  tap_r_excl_vaddr, tap_r_excl_map,
+                  tap_r_container_valid, tap_r_container_data,
+                  tap_r_entrypoint, tap_r_bmap,
+                  tap_r_l_way, tap_r_s_way);
+  }
+}

@@ -1,0 +1,121 @@
+module integrity_proof {
+    // Verify the initial state
+    axiom verif;
+
+    type create_enclave_op_t = enum {
+        create_by_launch,
+        create_by_clone
+    };
+
+    //=============================================================================//
+    // Initialization                                                              //
+    //=============================================================================//
+    init {
+        var status:    enclave_op_result_t;
+        var create_op: create_enclave_op_t;
+
+        // Enclave is assumed to be successfully created and hence not dead initially
+        assume (!enclave_dead && !cpu_1.tap_enclave_dead && !cpu_2.tap_enclave_dead);
+        
+        // Initialize TAP models in both traces
+        call (current_mode_1) = cpu_1.InitialHavoc();
+        call (current_mode_2) = cpu_2.InitialHavoc();
+
+        // Initialize OS memory
+        call cpu_1.InitOSMem(e_excl_map, e_container_data);
+        call cpu_2.InitOSMem(e_excl_map, e_container_data);
+        call cpu_1.InitOSMem(e_root_excl_map, e_container_data);
+        call cpu_2.InitOSMem(e_root_excl_map, e_container_data);
+
+        // Create the enclave with `eid` in both traces and assume it was successful
+        // The enclave can either be launched or cloned
+        case
+          (create_op == create_by_launch) : {
+            // Launch `eid` in trace 1
+            call (status) = cpu_1.launch(eid, e_addr_valid, e_addr_map, e_excl_vaddr, e_excl_map, e_entrypoint);
+            assume status == enclave_op_success;
+            
+            // Launch `eid` in trace 2
+            call (status) = cpu_2.launch(eid, e_addr_valid, e_addr_map, e_excl_vaddr, e_excl_map, e_entrypoint);
+            assume status == enclave_op_success;
+          }
+          (create_op == create_by_clone) : {
+            var parent_root_snapshot: tap_enclave_id_t;
+
+            // Get the root snapshot of `eid`. This is either going to be `r_parent_eid`
+            // if it's a snapshot or the root of `r_parent_eid`.
+            parent_root_snapshot = if (valid_enclave_id(r_parent_eid) && cpu_1.tap_enclave_metadata_is_snapshot[r_parent_eid])
+                                    then (r_parent_eid)
+                                    else if (valid_enclave_id(cpu_1.tap_enclave_metadata_root_snapshot[r_parent_eid]))
+                                    then (cpu_1.tap_enclave_metadata_root_snapshot[r_parent_eid])
+                                    else tap_invalid_enc_id;
+
+            // Sanity check: the parent root snapshot should be a snapshot
+            assert (valid_enclave_id(parent_root_snapshot) ==>
+                      cpu_1.tap_enclave_metadata_is_snapshot[parent_root_snapshot]);
+      
+            // Assume the parent or root snapshot's memory ownership to be the same
+            assume (forall (p: wap_addr_t) :: (e_root_excl_map[p] <==>
+                      ((cpu_1.cpu_owner_map[p] == parent_root_snapshot || cpu_1.cpu_owner_map[p] == r_parent_eid) &&
+                       (cpu_2.cpu_owner_map[p] == parent_root_snapshot || cpu_2.cpu_owner_map[p] == r_parent_eid))));
+
+            // Assume the parent or root snapshot's memory to be the same
+            assume (valid_enclave_id(parent_root_snapshot) ==>
+                      (forall (pa: wap_addr_t) :: (e_root_excl_map[pa] ==> cpu_1.cpu_mem[pa] == cpu_2.cpu_mem[pa])));
+
+            // Assume that the parent is identical in both traces
+            assume (tap_metadata_equal(r_parent_eid));
+
+            // If the parent has a root snapshot, it's also identical
+            assume (tap_metadata_equal(parent_root_snapshot));
+            
+            // The enclave in the parent traces owns PA defined by e_root_excl_map
+            assume (forall (pa: wap_addr_t) :: 
+                          ((cpu_1.cpu_owner_map[pa] == cpu_1.tap_enclave_metadata_root_snapshot[eid]) <==>
+                            e_root_excl_map[pa]));
+            assume (forall (pa: wap_addr_t) :: 
+                          ((cpu_2.cpu_owner_map[pa] == cpu_2.tap_enclave_metadata_root_snapshot[eid]) <==>
+                            e_root_excl_map[pa]));
+
+            // Clone `eid` in trace 1
+            call (status) = cpu_1.clone(eid, r_parent_eid, e_excl_map);
+            assume status == enclave_op_success;
+      
+            // Clone `eid` in trace 2
+            call (status) = cpu_2.clone(eid, r_parent_eid, e_excl_map);
+            assume status == enclave_op_success;
+          }
+        esac
+
+        // Sanity check
+        // assert current_mode_1 == mode_untrusted;
+        // assert current_mode_2 == mode_untrusted;
+
+        // Set global mode
+        current_mode = current_mode_1;
+
+        // Havoc the attacker inputs
+        havoc r_eid; havoc r_proof_op; havoc e_proof_op; havoc r_regs;
+        assume tap_proof_op_valid(r_proof_op);
+
+        // Execute the attacker operation in trace 1
+        call (current_mode_1, enclave_dead_1) = cpu_1.IntegrityAdversarialStep(
+                current_mode, eid, r_eid, r_parent_eid, r_regs, r_proof_op);
+        current_mode = current_mode_1;
+
+        // If the mode changed, we need to do this in trace_2
+        if (current_mode == mode_enclave) {
+            call (current_mode_2, enclave_dead_2) = cpu_2.IntegrityAdversarialStep(
+                    current_mode, eid, r_eid, r_parent_eid, r_regs, r_proof_op);
+            // sanity check.
+            // assert current_mode == mode_enclave;
+            // assert !enclave_dead;
+            // assert(false);
+        }
+        // assert(false);
+
+        // Set the shared mode and enclave `eid` state
+        current_mode = current_mode_1;
+        enclave_dead = enclave_dead_1;
+    }
+}

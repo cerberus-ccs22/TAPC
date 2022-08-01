@@ -1,0 +1,571 @@
+module cache_confidentiality_proof {
+  //----------------------------------------------------------------------//
+  // Import statements                                                    //
+  //----------------------------------------------------------------------//
+  
+  type * = proof_common.*;
+  const * = proof_common.*;
+  function * = proof_common.*;
+  define * = proof_common.*;
+
+  //----------------------------------------------------------------------//
+  // Proof state variables                                                //
+  //----------------------------------------------------------------------//
+  var e_addr_valid                                  : addr_valid_t;
+  var e_addr_map                                    : addr_map_t;
+  var e_excl_vaddr                                  : excl_vaddr_t;
+  var e_excl_map                                    : excl_map_t;
+  var e_container_data                              : container_data_t;
+  var e_entrypoint                                  : vaddr_t;
+
+  var cache_conflict : boolean;
+  var obs_pt_ev_read : boolean;
+
+  var eid, r_eid                                   : tap_enclave_id_t;
+  var status, status_1, status_2                   : enclave_op_result_t;
+  var e_addr_valid_1, e_addr_valid_2               : addr_valid_t;
+  var e_addr_map_1, e_addr_map_2                   : addr_map_t;
+  var e_excl_vaddr_1, e_excl_vaddr_2               : excl_vaddr_t;
+  var e_excl_map                                   : excl_map_t;
+  var e_container_data_1, e_container_data_2       : container_data_t;
+  var e_entrypoint_1, e_entrypoint_2               : vaddr_t;
+  var current_mode, current_mode_1, current_mode_2 : mode_t;
+  var enclave_dead, enclave_dead_1, enclave_dead_2 : boolean;
+  var observation_1, observation_2                 : word_t;
+  var e_proof_op, r_proof_op                       : tap_proof_op_t;
+  var word_1, word_2                               : word_t;
+  var paddr_1, paddr_2                             : wap_addr_t;
+  var load_addr_1, load_addr_2                     : vaddr_t;
+  var store_addr_1, store_addr_2                   : vaddr_t;
+  var store_data_1, store_data_2                   : word_t;
+  var r_addr_valid                                 : addr_valid_t;
+  var r_addr_map                                   : addr_map_t;
+  var r_excl_vaddr                                 : excl_vaddr_t;
+  var r_excl_map                                   : excl_map_t;
+  var r_bmap                                       : excl_map_t;
+  var r_container_valid                            : container_valid_t;
+  var r_container_data                             : container_data_t;
+  var r_entrypoint                                 : vaddr_t;
+  var r_pc                                         : vaddr_t;
+  var r_read                                       : regindex_t;
+  var r_write                                      : regindex_t;
+  var r_data                                       : word_t;
+  var r_pt_eid                                     : tap_enclave_id_t;
+  var r_pt_va                                      : vaddr_t;
+  var r_l_way, r_s_way                             : cache_way_index_t;
+  var pt_eid                                       : tap_enclave_id_t;
+  var pt_vaddr                                     : vaddr_t;
+  var pt_valid                                     : addr_perm_t;
+  var pt_paddr                                     : wap_addr_t;
+  var l_vaddr                                      : vaddr_t;
+  var s_vaddr                                      : vaddr_t;
+  var s_data                                       : word_t;
+  var l_way_1, s_way_1                             : cache_way_index_t;
+  var l_way_2, s_way_2                             : cache_way_index_t;
+    
+  instance cpu_1: tap(tap_r_eid: (r_eid),
+                      tap_eid: (eid),
+                      tap_r_proof_op: (r_proof_op),
+                      tap_e_proof_op: (e_proof_op),
+                      tap_current_mode: (current_mode_1),
+                      tap_enclave_dead: (enclave_dead_1),
+                      // Confidentiality variables
+                      tap_r_pc: (r_pc),
+                      tap_r_read: (r_read),
+                      tap_r_write: (r_write),
+                      tap_r_data: (r_data),
+                      tap_l_vaddr: (l_vaddr),
+                      tap_s_vaddr: (s_vaddr),
+                      tap_s_data: (s_data),
+                      tap_r_pt_eid: (r_pt_eid),
+                      tap_r_pt_va: (r_pt_va),
+                      tap_pt_eid: (pt_eid),
+                      tap_pt_vaddr: (pt_vaddr),
+                      tap_pt_valid: (pt_valid),
+                      tap_pt_paddr: (pt_paddr),
+                      tap_r_addr_valid: (r_addr_valid),
+                      tap_r_addr_map: (r_addr_map),
+                      tap_r_excl_vaddr: (r_excl_vaddr),
+                      tap_r_excl_map: (r_excl_map),
+                      tap_r_container_valid: (r_container_valid),
+                      tap_r_container_data: (r_container_data),
+                      tap_r_entrypoint: (r_entrypoint),
+                      tap_r_bmap: (r_bmap),
+                      tap_r_l_way: (r_l_way),
+                      tap_r_s_way: (r_s_way),
+                      tap_store_addr: (store_addr_1),
+                      tap_store_data: (store_data_1),
+                      tap_load_addr: (load_addr_1),
+                      tap_l_way: (l_way_1),
+                      tap_s_way: (s_way_1)
+                      );
+
+  instance cpu_2: tap(tap_r_eid: (r_eid),
+                      tap_eid: (eid),
+                      tap_r_proof_op: (r_proof_op),
+                      tap_e_proof_op: (e_proof_op),
+                      tap_current_mode: (current_mode_2),
+                      tap_enclave_dead: (enclave_dead_2),
+                      // Confidentiality variables
+                      tap_r_pc: (r_pc),
+                      tap_r_read: (r_read),
+                      tap_r_write: (r_write),
+                      tap_r_data: (r_data),
+                      tap_l_vaddr: (l_vaddr),
+                      tap_s_vaddr: (s_vaddr),
+                      tap_s_data: (s_data),
+                      tap_r_pt_eid: (r_pt_eid),
+                      tap_r_pt_va: (r_pt_va),
+                      tap_pt_eid: (pt_eid),
+                      tap_pt_vaddr: (pt_vaddr),
+                      tap_pt_valid: (pt_valid),
+                      tap_pt_paddr: (pt_paddr),
+                      tap_r_addr_valid: (r_addr_valid),
+                      tap_r_addr_map: (r_addr_map),
+                      tap_r_excl_vaddr: (r_excl_vaddr),
+                      tap_r_excl_map: (r_excl_map),
+                      tap_r_container_valid: (r_container_valid),
+                      tap_r_container_data: (r_container_data),
+                      tap_r_entrypoint: (r_entrypoint),
+                      tap_r_bmap: (r_bmap),
+                      tap_r_l_way: (r_l_way),
+                      tap_r_s_way: (r_s_way),
+                      tap_store_addr: (store_addr_2),
+                      tap_store_data: (store_data_2),
+                      tap_load_addr: (load_addr_2),
+                      tap_l_way: (l_way_2),
+                      tap_s_way: (s_way_2)
+                      );
+
+    var excp_1_1, excp_1_2, excp_2_1, excp_2_2       : exception_t;
+    var hit_1_1, hit_1_2, hit_2_1, hit_2_2           : boolean;
+  init {
+
+    // initialize proof variables
+    enclave_dead = false;
+    enclave_dead_1 = false;
+    enclave_dead_2 = false;
+
+    assume (!cpu_1.cpu_cache_enabled ==> !cache_conflict);
+    assume (!cpu_2.cpu_cache_enabled ==> !cache_conflict);
+
+    // initialize state of first cpu
+    call (current_mode) = cpu_1.InitialHavoc();
+    assert tap_addr_perm_x(cpu_1.cpu_addr_valid[cpu_1.cpu_pc]);
+    assert cpu_1.cpu_owner_map[cpu_1.cpu_addr_map[cpu_1.cpu_pc]] == cpu_1.cpu_enclave_id;
+    assert cpu_1.cpu_enclave_id == tap_null_enc_id;
+
+    // initialize the untrusted (OS) state with sane values.
+    call cpu_1.InitUntrustedState(cpu_1.cpu_addr_valid, cpu_1.cpu_addr_map, cpu_1.cpu_pc);
+    
+    call cpu_2.SetInitState(
+      cpu_1.cpu_mem,
+      cpu_1.cpu_regs,
+      cpu_1.cpu_pc,
+      cpu_1.cpu_enclave_id,
+      cpu_1.cpu_addr_valid,
+      cpu_1.cpu_addr_map,
+      cpu_1.cpu_owner_map,
+      cpu_1.cache_valid_map,
+      cpu_1.cache_tag_map,
+      cpu_1.untrusted_addr_valid,
+      cpu_1.untrusted_addr_map,
+      cpu_1.untrusted_regs,
+      cpu_1.untrusted_pc,
+      cpu_1.tap_enclave_metadata_valid,
+      cpu_1.tap_enclave_metadata_addr_map,
+      cpu_1.tap_enclave_metadata_addr_valid,
+      cpu_1.tap_enclave_metadata_addr_excl,
+      cpu_1.tap_enclave_metadata_entrypoint,
+      cpu_1.tap_enclave_metadata_pc,
+      cpu_1.tap_enclave_metadata_regs,
+      cpu_1.tap_enclave_metadata_paused,
+      cpu_1.tap_enclave_metadata_cache_conflict
+    );
+
+    // launch should not leave the PC in an untenable sitation.
+    assume !e_excl_map[cpu_1.cpu_addr_map[cpu_1.cpu_pc]];
+
+    // now launch enclave_1.
+    call cpu_1.InitOSMem(e_excl_map, e_container_data_1);
+    call (status) = cpu_1.launch(eid, e_addr_valid_1, e_addr_map_1,
+                          e_excl_vaddr_1, e_excl_map, e_entrypoint_1);
+    assume cpu_1.tap_enclave_metadata_cache_conflict[eid] == cache_conflict;
+    assume status == enclave_op_success;
+    
+    // and then enclave_2
+    call cpu_2.InitOSMem(e_excl_map, e_container_data_2);
+    call (status) = cpu_2.launch(eid, e_addr_valid_2, e_addr_map_2,
+                          e_excl_vaddr_2, e_excl_map, e_entrypoint_2);
+    
+    assume cpu_2.tap_enclave_metadata_cache_conflict[eid] == cache_conflict;
+    assume status == enclave_op_success;
+
+    // initial value of the observations.
+    observation_1 = k0_word_t;
+    observation_2 = k0_word_t;
+
+    assert current_mode == mode_untrusted;
+    current_mode = mode_untrusted;
+
+    //assert(false);
+    if (!enclave_dead) {
+        havoc r_proof_op;   havoc r_eid;    havoc r_pc;   havoc r_read;   havoc r_write; 
+        havoc r_data;       havoc l_vaddr;  havoc s_vaddr;  havoc s_data;   havoc r_pt_eid;
+        havoc r_pt_va;      havoc pt_eid;   havoc pt_vaddr; havoc pt_valid; havoc  pt_paddr;
+        havoc  r_addr_valid; havoc r_addr_map; havoc r_excl_vaddr; havoc r_excl_map; 
+        havoc r_bmap;     havoc r_container_valid; havoc r_container_data; havoc r_entrypoint; 
+        havoc r_l_way;    havoc  r_s_way;
+
+        assume valid_regindex(r_read);
+        assume valid_regindex(r_write);
+        assume valid_cache_way_index(r_l_way);
+        assume valid_cache_way_index(r_s_way);
+
+        // trace_1
+        call (observation_1, current_mode_1, enclave_dead_1, status_1, excp_1_1, excp_1_2, hit_1_1, hit_1_2) =
+                                cpu_1.ObserverStep(k_cache_observer_t, current_mode, eid, r_eid, r_proof_op,
+                                            r_pc, r_read, r_write, r_data,
+                                            l_vaddr, s_vaddr, s_data,
+                                            r_pt_eid, r_pt_va,
+                                            pt_eid, pt_vaddr, pt_valid, pt_paddr,
+                                            r_addr_valid, r_addr_map, r_excl_vaddr,
+                                            r_excl_map, r_container_valid, r_container_data,
+                                            r_entrypoint, r_bmap,
+                                            r_l_way, r_s_way);
+
+        // trace_2
+        call (observation_2, current_mode_2, enclave_dead_2, status_2, excp_2_1, excp_2_2, hit_2_1, hit_2_2) =
+                                cpu_2.ObserverStep(k_cache_observer_t, current_mode, eid, r_eid, r_proof_op,
+                                            r_pc, r_read, r_write, r_data,
+                                            l_vaddr, s_vaddr, s_data,
+                                            r_pt_eid, r_pt_va,
+                                            pt_eid, pt_vaddr, pt_valid, pt_paddr,
+                                            r_addr_valid, r_addr_map, r_excl_vaddr,
+                                            r_excl_map, r_container_valid, r_container_data,
+                                            r_entrypoint, r_bmap,
+                                            r_l_way, r_s_way);
+
+        
+        // some sanity checks.
+        assert status_1 == status_2;
+        assert current_mode_1 == current_mode_2;
+        assert enclave_dead_1 == enclave_dead_2;
+        current_mode = current_mode_1;
+        enclave_dead = enclave_dead_2;
+        //assert(false);
+    }
+    //assert(false);
+  }
+
+  //// The property ////
+  invariant inv_1: (!cache_conflict) ==> (observation_1 == observation_2);
+  //// Cache ////
+  // state that trusted cache lines do not conflict with untrusted lines.
+  invariant inv_2: (cpu_1.cpu_cache_enabled && !cache_conflict) ==>
+              (forall (p1, p2 : wap_addr_t) ::
+                (e_excl_map[p1] && !e_excl_map[p2]) ==>
+                    (paddr2set(p1) != paddr2set(p2)));
+  invariant inv_3: (!enclave_dead && cpu_1.cpu_cache_enabled && !cache_conflict) ==>
+              (forall (p : wap_addr_t, w : cache_way_index_t) ::
+                (!e_excl_map[p] && valid_cache_way_index(w)) ==>
+                  ((cpu_1.cache_valid_map[paddr2set(p), w] == cpu_2.cache_valid_map[paddr2set(p), w]) &&
+                   (cpu_1.cache_valid_map[paddr2set(p), w] && cpu_2.cache_valid_map[paddr2set(p), w] ==>
+                    (cpu_1.cache_tag_map[paddr2set(p), w] == cpu_2.cache_tag_map[paddr2set(p), w]))));
+  //// General invariants /////
+  invariant inv_4: current_mode == mode_untrusted || current_mode == mode_enclave;
+  // memory is not assigned to an enclave that doesn't exist.
+  invariant inv_5: (forall (pa : wap_addr_t, e : tap_enclave_id_t) ::
+              (valid_enclave_id(e) && !cpu_1.tap_enclave_metadata_valid[e]) ==>
+                  (cpu_1.cpu_owner_map[pa] != e));
+  invariant inv_6: (forall (pa : wap_addr_t, e : tap_enclave_id_t) ::
+              (valid_enclave_id(e) && !cpu_2.tap_enclave_metadata_valid[e]) ==>
+                  (cpu_2.cpu_owner_map[pa] != e));
+  //-------------------------------------------------------------------//
+  // CPU mode and CPU enclave ID must be consistent.
+  //-------------------------------------------------------------------//
+  invariant inv_7: (forall (e : tap_enclave_id_t) :: 
+              !valid_enclave_id(e) ==> !cpu_1.tap_enclave_metadata_valid[tap_null_enc_id]);
+  invariant inv_8: (forall (e : tap_enclave_id_t) ::
+              !valid_enclave_id(e) ==> !cpu_2.tap_enclave_metadata_valid[tap_null_enc_id]);
+  invariant inv_9: (current_mode == mode_untrusted) ==> cpu_1.cpu_enclave_id != eid;
+  invariant inv_10: (current_mode == mode_untrusted) ==> cpu_2.cpu_enclave_id != eid;
+  invariant inv_11: (current_mode == mode_enclave) ==> (cpu_1.cpu_enclave_id == eid);
+  invariant inv_12: (current_mode == mode_enclave) ==> (cpu_2.cpu_enclave_id == eid);
+  //-------------------------------------------------------------------//
+  // Enclave 'eid' is mostly alive                                     //
+  //-------------------------------------------------------------------//
+  invariant inv_13: (cpu_1.cpu_enclave_id != tap_blocked_enc_id);
+  invariant inv_14: (cpu_2.cpu_enclave_id != tap_blocked_enc_id);
+  invariant inv_15: (valid_enclave_id(eid));
+  invariant inv_16: (!enclave_dead ==> cpu_1.tap_enclave_metadata_valid[eid]);
+  invariant inv_17: (!enclave_dead ==> cpu_2.tap_enclave_metadata_valid[eid]);
+  // maintain invariants about excl_vaddr.
+  invariant inv_18: (!enclave_dead) ==>
+                  (cpu_1.tap_enclave_metadata_addr_excl[eid] == e_excl_vaddr_1);
+  invariant inv_19: (!enclave_dead) ==>
+                  (cpu_2.tap_enclave_metadata_addr_excl[eid] == e_excl_vaddr_2);
+  // invariants about addr_map
+  invariant inv_20: (forall (v : vaddr_t) ::
+                (!enclave_dead && e_excl_vaddr_1[v]) ==>
+                    (cpu_1.tap_enclave_metadata_addr_map[eid][v] == e_addr_map_1[v]));
+  invariant inv_21: (forall (v : vaddr_t) ::
+                (!enclave_dead && e_excl_vaddr_2[v]) ==>
+                    (cpu_2.tap_enclave_metadata_addr_map[eid][v] == e_addr_map_2[v]));
+  // invariants about e_excl_addr
+  invariant inv_22: (forall (p : wap_addr_t) ::
+              (!enclave_dead) ==> ((cpu_1.cpu_owner_map[p] == eid) <==> e_excl_map[p]));
+  invariant inv_23: (forall (p : wap_addr_t) ::
+              (!enclave_dead) ==> ((cpu_2.cpu_owner_map[p] == eid) <==> e_excl_map[p]));
+  invariant inv_24: (forall (v : vaddr_t, p : wap_addr_t) ::
+                  (!enclave_dead && e_excl_vaddr_1[v] && p == e_addr_map_1[v])
+                      ==> e_excl_map[p]);
+  invariant inv_25: (forall (v : vaddr_t, p : wap_addr_t) ::
+                  (!enclave_dead && e_excl_vaddr_2[v] && p == e_addr_map_2[v])
+                      ==> e_excl_map[p]);
+  //-------------------------------------------------------------------//
+  // Now deal with the enclaves.
+  //-------------------------------------------------------------------//
+  invariant inv_26: (forall (v : vaddr_t) ::
+              (current_mode == mode_enclave && e_excl_vaddr_1[v]) ==>
+                  (cpu_1.cpu_addr_map[v] == e_addr_map_1[v]));
+  invariant inv_27: (forall (v : vaddr_t) ::
+              (current_mode == mode_enclave && e_excl_vaddr_2[v]) ==>
+                  (cpu_2.cpu_addr_map[v] == e_addr_map_2[v]));
+  //-------------------------------------------------------------------//
+  // CPU state is the same                                             //
+  //-------------------------------------------------------------------//
+  // same PC.
+  invariant inv_28: (current_mode == mode_untrusted) ==> (cpu_1.cpu_pc == cpu_2.cpu_pc);
+  // same mode of operation.
+  invariant inv_29: (cpu_1.cpu_enclave_id == cpu_2.cpu_enclave_id);
+  // same regs.
+  invariant inv_30: (current_mode == mode_untrusted) ==> (cpu_1.cpu_regs == cpu_2.cpu_regs);
+  // same va->pa.
+  invariant inv_31: (current_mode == mode_untrusted) ==>
+              (cpu_1.cpu_addr_valid == cpu_2.cpu_addr_valid);
+  invariant inv_32: (current_mode == mode_untrusted) ==>
+                  (cpu_1.cpu_addr_map == cpu_2.cpu_addr_map);
+  // owner map is the same.
+  invariant inv_33: (forall (pa : wap_addr_t) :: (cpu_1.cpu_owner_map[pa] == cpu_2.cpu_owner_map[pa]));
+  // memory is the same except for the enclave memory.
+  invariant inv_34: (forall (pa : wap_addr_t) :: !e_excl_map[pa] ==> (cpu_1.cpu_mem[pa] == cpu_2.cpu_mem[pa]));
+  //-------------------------------------------------------------------//
+  //// OS state is the same ////
+  //-------------------------------------------------------------------//
+  // OS va->pa
+  invariant inv_35: (cpu_1.untrusted_addr_valid == cpu_2.untrusted_addr_valid);
+  invariant inv_36: (cpu_1.untrusted_addr_map == cpu_2.untrusted_addr_map);
+  // OS regs.
+  invariant inv_37: (cpu_1.untrusted_regs == cpu_2.untrusted_regs);
+  invariant inv_38: (cpu_1.untrusted_pc == cpu_2.untrusted_pc);
+  //-------------------------------------------------------------------//
+  // Enclave state is the same except for eid (mostly). Some it is the //
+  // the same for eid as well (addr_map and addr_excl).                //
+  //-------------------------------------------------------------------//
+  // valid is the same except for eid.
+  invariant inv_39: (forall (e : tap_enclave_id_t) :: (e != eid) ==>
+              (cpu_1.tap_enclave_metadata_valid[e] == cpu_2.tap_enclave_metadata_valid[e]));
+  // addr valid is the same except for eid.
+  invariant inv_40: (forall (e : tap_enclave_id_t) ::
+              (cpu_1.tap_enclave_metadata_valid[e] && cpu_2.tap_enclave_metadata_valid[e] && e != eid) ==>
+                  (cpu_1.tap_enclave_metadata_addr_valid[e] == cpu_2.tap_enclave_metadata_addr_valid[e]));
+  // the addr_map is the same for all enclaves.
+  invariant inv_41: (forall (e : tap_enclave_id_t) ::
+              (cpu_1.tap_enclave_metadata_valid[e] && cpu_2.tap_enclave_metadata_valid[e] && e != eid) ==>
+                  (cpu_1.tap_enclave_metadata_addr_map[e] == cpu_2.tap_enclave_metadata_addr_map[e]));
+  // addr_excl is the same except for eid.
+  invariant inv_42: (forall (e : tap_enclave_id_t) ::
+              (cpu_1.tap_enclave_metadata_valid[e] && cpu_2.tap_enclave_metadata_valid[e] && e != eid) ==>
+                  (cpu_1.tap_enclave_metadata_addr_excl[e] == cpu_2.tap_enclave_metadata_addr_excl[e]));
+  // entrypoints are the same except for eid.
+  invariant inv_43: (forall (e : tap_enclave_id_t) ::
+              (cpu_1.tap_enclave_metadata_valid[e] && cpu_2.tap_enclave_metadata_valid[e] && e != eid) ==>
+                  (cpu_1.tap_enclave_metadata_entrypoint[e] == cpu_2.tap_enclave_metadata_entrypoint[e]));
+  // pc is the same except for the eid
+  invariant inv_44: (forall (e : tap_enclave_id_t) ::
+              (cpu_1.tap_enclave_metadata_valid[e] && cpu_2.tap_enclave_metadata_valid[e] && e != eid) ==>
+                  (cpu_1.tap_enclave_metadata_pc[e] == cpu_2.tap_enclave_metadata_pc[e]));
+  // regs are the same except for the eid
+  invariant inv_45: (forall (e : tap_enclave_id_t) ::
+              (cpu_1.tap_enclave_metadata_valid[e] && cpu_2.tap_enclave_metadata_valid[e] && e != eid) ==>
+                  (cpu_1.tap_enclave_metadata_regs[e] == cpu_2.tap_enclave_metadata_regs[e]));
+  // paused is the same except for the eid
+  invariant inv_46: (forall (e : tap_enclave_id_t) ::
+              (cpu_1.tap_enclave_metadata_valid[e] && cpu_2.tap_enclave_metadata_valid[e]) ==>
+                  (cpu_1.tap_enclave_metadata_paused[e] == cpu_2.tap_enclave_metadata_paused[e]));
+
+  // Inputs are the same
+  invariant inv_same_tap_r_eid: (cpu_1.tap_r_eid == cpu_2.tap_r_eid);
+  invariant inv_same_tap_eid: (cpu_1.tap_eid == cpu_2.tap_eid);
+  invariant inv_same_tap_r_proof_op: (cpu_1.tap_r_proof_op == cpu_2.tap_r_proof_op);
+  invariant inv_same_tap_e_proof_op: (cpu_1.tap_e_proof_op == cpu_2.tap_e_proof_op);
+  invariant inv_same_tap_pc: (r_pc == cpu_1.tap_r_pc && cpu_1.tap_r_pc == cpu_2.tap_r_pc);
+  invariant inv_same_tap_r_read: (r_read == cpu_1.tap_r_read && cpu_1.tap_r_read == cpu_2.tap_r_read);
+  invariant inv_same_tap_r_write: (r_write == cpu_1.tap_r_write && cpu_1.tap_r_write == cpu_2.tap_r_write);
+  invariant inv_same_tap_r_data: (r_data == cpu_1.tap_r_data && cpu_1.tap_r_data == cpu_2.tap_r_data);
+  invariant inv_same_tap_l_vaddr: (l_vaddr == cpu_1.tap_l_vaddr && cpu_1.tap_l_vaddr == cpu_2.tap_l_vaddr);
+  invariant inv_same_tap_s_vaddr: (s_vaddr == cpu_1.tap_s_vaddr && cpu_1.tap_s_vaddr == cpu_2.tap_s_vaddr);
+  invariant inv_same_tap_s_data: (s_data == cpu_1.tap_s_data && cpu_1.tap_s_data == cpu_2.tap_s_data);
+  invariant inv_same_tap_r_pt_eid: (r_pt_eid == cpu_1.tap_r_pt_eid && cpu_1.tap_r_pt_eid == cpu_2.tap_r_pt_eid);
+  invariant inv_same_tap_r_pt_va: (r_pt_va == cpu_1.tap_r_pt_va && cpu_1.tap_r_pt_va == cpu_2.tap_r_pt_va);
+  invariant inv_same_tap_pt_eid: (pt_eid == cpu_1.tap_pt_eid && cpu_1.tap_pt_eid == cpu_2.tap_pt_eid);
+  invariant inv_same_tap_pt_vaddr: (pt_vaddr == cpu_1.tap_pt_vaddr && cpu_1.tap_pt_vaddr == cpu_2.tap_pt_vaddr);
+  invariant inv_same_tap_pt_valid: (pt_valid == cpu_1.tap_pt_valid && cpu_1.tap_pt_valid == cpu_2.tap_pt_valid);
+  invariant inv_same_tap_pt_paddr: (pt_paddr == cpu_1.tap_pt_paddr && cpu_1.tap_pt_paddr == cpu_2.tap_pt_paddr);
+  invariant inv_same_tap_r_addr_valid: (r_addr_valid == cpu_1.tap_r_addr_valid && cpu_1.tap_r_addr_valid == cpu_2.tap_r_addr_valid);
+  invariant inv_same_tap_r_addr_map: (r_addr_map == cpu_1.tap_r_addr_map && cpu_1.tap_r_addr_map == cpu_2.tap_r_addr_map);
+  invariant inv_same_tap_r_excl_vaddr: (r_excl_vaddr == cpu_1.tap_r_excl_vaddr && cpu_1.tap_r_excl_vaddr == cpu_2.tap_r_excl_vaddr);
+  invariant inv_same_tap_r_excl_map: (r_excl_map == cpu_1.tap_r_excl_map && cpu_1.tap_r_excl_map == cpu_2.tap_r_excl_map);
+  invariant inv_same_tap_r_container_valid: (r_container_valid == cpu_1.tap_r_container_valid && cpu_1.tap_r_container_valid == cpu_2.tap_r_container_valid);
+  invariant inv_same_tap_r_container_data: (r_container_data == cpu_1.tap_r_container_data && cpu_1.tap_r_container_data == cpu_2.tap_r_container_data);
+  invariant inv_same_tap_r_entrypoint: (r_entrypoint == cpu_1.tap_r_entrypoint && cpu_1.tap_r_entrypoint == cpu_2.tap_r_entrypoint);
+  invariant inv_same_tap_r_bmap: (r_bmap == cpu_1.tap_r_bmap && cpu_1.tap_r_bmap == cpu_2.tap_r_bmap);
+  invariant inv_same_tap_r_l_way: (r_l_way == cpu_1.tap_r_l_way && cpu_1.tap_r_l_way == cpu_2.tap_r_l_way);
+  invariant inv_same_tap_r_s_way: (r_s_way == cpu_1.tap_r_s_way && cpu_1.tap_r_s_way == cpu_2.tap_r_s_way);
+
+  // Outputs are the same
+  invariant inv_same_mode: cpu_1.tap_current_mode == cpu_2.tap_current_mode && cpu_1.tap_current_mode == current_mode;
+  invariant inv_same_enc_not_dead: enclave_dead == cpu_1.tap_enclave_dead && enclave_dead == cpu_2.tap_enclave_dead;
+
+  // The cache is enabled
+  axiom cpu_1.cpu_cache_enabled == cpu_2.cpu_cache_enabled;
+
+  // The observer is the memory observer
+  axiom cpu_1.tap_observer == k_cache_observer_t && cpu_2.tap_observer == k_cache_observer_t;
+
+  // Read from valid register indices
+  axiom valid_regindex(r_read);
+  axiom valid_regindex(r_write);
+
+  // Cache way indices are valid
+  axiom valid_cache_way_index(r_l_way);
+  axiom valid_cache_way_index(r_s_way);
+
+  // Assume that the attacker has access to only user side operations.
+  axiom tap_proof_op_valid(r_proof_op);
+  
+  // Assume that the enclave has access to only enclave operations.
+  axiom tap_proof_op_valid_in_enclave(e_proof_op);
+
+  // procedure step()
+  //   modifies r_proof_op;   modifies r_eid;    modifies r_pc;   modifies r_read;   modifies r_write; 
+  //   modifies r_data;       modifies l_vaddr;  modifies s_vaddr;  modifies s_data;   modifies r_pt_eid;
+  //   modifies r_pt_va;      modifies pt_eid;   modifies pt_vaddr; modifies pt_valid; modifies  pt_paddr;
+  //   modifies  r_addr_valid; modifies r_addr_map; modifies r_excl_vaddr; modifies r_excl_map; 
+  //   modifies r_bmap;     modifies r_container_valid; modifies r_container_data; modifies r_entrypoint; 
+  //   modifies r_l_way;    modifies  r_s_way;
+  //   modifies l_way_2, status_2, store_addr_1, current_mode, excp_1_2, cpu_1, load_addr_2, enclave_dead_2, observation_2, l_way_1, load_addr_1, enclave_dead_1, store_data_1, current_mode_2;
+  //   modifies hit_1_1, hit_1_2, hit_2_1, hit_2_2;
+  //   modifies cpu_2, e_proof_op, s_way_2, enclave_dead, excp_1_2, excp_2_1, excp_2_2;
+  //   modifies current_mode_1, excp_1_1, store_data_2, s_way_1, store_addr_2, current_mode_1, status_1, observation_1;
+  // {
+  //   if (current_mode == mode_untrusted) {
+  //       havoc r_proof_op;   havoc r_eid;    havoc r_pc;   havoc r_read;   havoc r_write; 
+  //       havoc r_data;       havoc l_vaddr;  havoc s_vaddr;  havoc s_data;   havoc r_pt_eid;
+  //       havoc r_pt_va;      havoc pt_eid;   havoc pt_vaddr; havoc pt_valid; havoc  pt_paddr;
+  //       havoc  r_addr_valid; havoc r_addr_map; havoc r_excl_vaddr; havoc r_excl_map; 
+  //       havoc r_bmap;     havoc r_container_valid; havoc r_container_data; havoc r_entrypoint; 
+  //       havoc r_l_way;    havoc  r_s_way;
+
+  //       assume valid_regindex(r_read);
+  //       assume valid_regindex(r_write);
+  //       assume valid_cache_way_index(r_l_way);
+  //       assume valid_cache_way_index(r_s_way);
+
+  //       // trace_1
+  //       call (observation_1, current_mode_1, enclave_dead_1, status_1, excp_1_1, excp_1_2, hit_1_1, hit_1_2) =
+  //                               cpu_1.ObserverStep(k_cache_observer_t, current_mode, eid, r_eid, r_proof_op,
+  //                                           r_pc, r_read, r_write, r_data,
+  //                                           l_vaddr, s_vaddr, s_data,
+  //                                           r_pt_eid, r_pt_va,
+  //                                           pt_eid, pt_vaddr, pt_valid, pt_paddr,
+  //                                           r_addr_valid, r_addr_map, r_excl_vaddr,
+  //                                           r_excl_map, r_container_valid, r_container_data,
+  //                                           r_entrypoint, r_bmap,
+  //                                           r_l_way, r_s_way);
+
+  //       // trace_2
+  //       call (observation_2, current_mode_2, enclave_dead_2, status_2, excp_2_1, excp_2_2, hit_2_1, hit_2_2) =
+  //                               cpu_2.ObserverStep(k_cache_observer_t, current_mode, eid, r_eid, r_proof_op,
+  //                                           r_pc, r_read, r_write, r_data,
+  //                                           l_vaddr, s_vaddr, s_data,
+  //                                           r_pt_eid, r_pt_va,
+  //                                           pt_eid, pt_vaddr, pt_valid, pt_paddr,
+  //                                           r_addr_valid, r_addr_map, r_excl_vaddr,
+  //                                           r_excl_map, r_container_valid, r_container_data,
+  //                                           r_entrypoint, r_bmap,
+  //                                           r_l_way, r_s_way);
+
+        
+  //       // some sanity checks.
+  //       assert status_1 == status_2;
+  //       assert current_mode_1 == current_mode_2;
+  //       assert enclave_dead_1 == enclave_dead_2;
+  //       current_mode = current_mode_1;
+  //       enclave_dead = enclave_dead_2;
+  //       //assert(false);
+  //   } else {
+  //       havoc e_proof_op;
+  //       assume tap_proof_op_valid_in_enclave(e_proof_op);
+
+  //       // trace_1
+  //       call (current_mode_1, load_addr_1, l_way_1, store_addr_1, store_data_1, s_way_1) =
+  //                       cpu_1.EnclaveStep(current_mode, eid, e_proof_op);
+
+  //       // trace_2
+  //       call (current_mode_2, load_addr_2, l_way_2, store_addr_2, store_data_2, s_way_2) =
+  //                       cpu_2.EnclaveStep(current_mode, eid, e_proof_op);
+
+  //       // some sanity checks.
+  //       assert current_mode_1 == current_mode_2;
+  //       current_mode = current_mode_1;
+
+  //       // we assume that enclave/inputs and outputs are identical.
+  //       assume (!e_excl_vaddr_1[load_addr_1] || !e_excl_vaddr_2[load_addr_2]) ==>
+  //                  (load_addr_1 == load_addr_2 && l_way_1 == l_way_2 &&
+  //                   cpu_1.cpu_addr_map[load_addr_1] == cpu_2.cpu_addr_map[load_addr_2]);
+  //       assume (!e_excl_vaddr_1[store_addr_1] || !e_excl_vaddr_2[store_addr_2]) ==>
+  //                  (store_addr_1 == store_addr_2 && store_data_1 == store_data_2 && s_way_1 == s_way_2 &&
+  //                   cpu_1.cpu_addr_map[store_addr_1] == cpu_2.cpu_addr_map[store_addr_2]);
+  //       //assert(false);
+  //   }
+  //   //assert(false);
+  // }
+
+  next {
+    // call step();
+
+    // Assume that the trusted enclave is not destroyed
+    // This covers the termination case because it can die after the transition step
+    assume (!enclave_dead && !cpu_1.tap_enclave_dead && !cpu_2.tap_enclave_dead);
+
+    next(cpu_1); next(cpu_2);
+
+    // We don't care what happened to load_address, but store_addr and store_data
+    // must store the same value outside of memory.
+    // ie. we assume that enclave/inputs and outputs are identical.
+    assume (!e_excl_vaddr_1'[load_addr_1'] || !e_excl_vaddr_2'[load_addr_2']) ==>
+               (load_addr_1' == load_addr_2' && l_way_1' == l_way_2' &&
+                cpu_1.cpu_addr_map[load_addr_1'] == cpu_2.cpu_addr_map[load_addr_2']);
+    assume (!e_excl_vaddr_1'[store_addr_1'] || !e_excl_vaddr_2'[store_addr_2']) ==>
+               (store_addr_1' == store_addr_2' && store_data_1' == store_data_2' && s_way_1' == s_way_2' &&
+                cpu_1.cpu_addr_map[store_addr_1'] == cpu_2.cpu_addr_map[store_addr_2']);
+
+    // Set the shared mode and enclave `eid` state
+    current_mode' = current_mode_1';
+    enclave_dead' = enclave_dead_2';
+  }
+
+  control {
+    set_solver_option(":mbqi", false);
+    set_solver_option(":case_split", 0);
+    set_solver_option(":relevancy", 0);
+    set_solver_option(":threads", 4);
+    // set_solver_option(":timeout", 200000);
+    v = induction();
+    check;
+    print_results;
+  }
+
+}

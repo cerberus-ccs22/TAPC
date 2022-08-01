@@ -1,0 +1,115 @@
+module tap {
+  //======================================================================//
+  // Enclave operation                                                    //
+  //======================================================================//
+  procedure [inline] EnclaveStep(
+      /* Current mode */      mode              : mode_t,
+      /* Secret Enclave */    eid               : tap_enclave_id_t,
+      /* Operation. */        op                : tap_proof_op_t)
+
+      returns (
+          /* mode     */  next_mode : mode_t, 
+          /* read     */  load_addr : vaddr_t, l_way : cache_way_index_t,
+          /* store    */  store_addr : vaddr_t, store_data : word_t, s_way : cache_way_index_t
+      )
+      //modifies tap_enclave_metadata_valid;
+      modifies tap_enclave_metadata_addr_map;
+      modifies tap_enclave_metadata_addr_valid;
+      modifies tap_enclave_metadata_addr_excl;
+      modifies tap_enclave_metadata_pc;
+      modifies tap_enclave_metadata_regs;
+      modifies tap_enclave_metadata_paused;
+      modifies tap_enclave_metadata_cache_conflict;
+      modifies tap_enclave_metadata_wap_addr_free;
+      modifies cache_valid_map, cache_tag_map;
+      modifies cpu_pc;
+      modifies cpu_regs;
+      modifies cpu_mem;
+      modifies cpu_enclave_id;
+      modifies cpu_addr_map;
+      modifies cpu_addr_valid;
+  {
+      var vaddr  : vaddr_t;
+      var word   : word_t;
+      var excp   : exception_t;
+      var status : enclave_op_result_t;
+      var hit    : boolean;
+      var owner  : tap_enclave_id_t;
+      var way    : cache_way_index_t;
+
+      assume (op == tap_proof_op_compute);
+
+      call havoc_cpu_pc();
+      call havoc_cpu_regs();
+
+      // Fetch from wherever inside the enclave.
+      assume tap_enclave_metadata_addr_excl[eid][cpu_pc];
+      assume tap_addr_perm_x(cpu_addr_valid[cpu_pc]);
+      assume cpu_owner_map[cpu_addr_map[cpu_pc]] == eid ||
+             (valid_enclave_id(tap_enclave_metadata_root_snapshot[eid]) &&
+              tap_enclave_metadata_valid[tap_enclave_metadata_root_snapshot[eid]] &&
+              cpu_owner_map[cpu_addr_map[cpu_pc]] == tap_enclave_metadata_root_snapshot[eid]);
+
+      havoc way; assume valid_cache_way_index(way);
+      call (word, excp, hit) = fetch_va(cpu_pc, way);
+
+      // load from whereever inside the enclave.
+      havoc load_addr;
+      assume tap_addr_perm_r(cpu_addr_valid[load_addr]);
+      owner = cpu_owner_map[cpu_addr_map[load_addr]];
+      assume owner == eid ||
+             owner == tap_null_enc_id ||
+             (valid_enclave_id(tap_enclave_metadata_root_snapshot[eid]) &&
+              tap_enclave_metadata_valid[tap_enclave_metadata_root_snapshot[eid]] &&
+              owner == tap_enclave_metadata_root_snapshot[eid]);
+      
+      havoc l_way;
+      assume valid_cache_way_index(l_way);
+      
+      call (word, excp, hit) = load_va(load_addr, l_way);
+      
+      assert excp != excp_out_of_memory_fault;
+      assert excp != excp_os_protection_fault;
+
+      // store whatever inside the enclave.
+      havoc store_addr;
+      havoc store_data;
+      
+      assume tap_addr_perm_w(cpu_addr_valid[store_addr]);
+      owner = cpu_owner_map[cpu_addr_map[store_addr]];
+
+      // If the root is invalid, then the owner must have been eid or no enclave
+      // otherwise it could have been the root snapshot as well
+      if (tap_enclave_metadata_root_snapshot[eid] == tap_invalid_enc_id) {
+          assume owner == eid || owner == tap_null_enc_id;
+      } else {
+          assume owner == eid || owner == tap_null_enc_id || owner == tap_enclave_metadata_root_snapshot[eid];
+      }
+      
+      havoc s_way;
+      assume valid_cache_way_index(s_way);
+      
+      call (excp, hit) = store_va(store_addr, store_data, s_way);
+      
+      // Sanity check
+      assert excp == excp_none ||
+             excp == excp_out_of_memory_fault ||
+             excp == excp_tp_protection_fault ||
+             excp == excp_os_protection_fault;
+
+      store_data = store_data;
+
+      // stay in the same mode.
+      next_mode = mode;
+
+      //assert(false);
+  }
+
+  //======================================================================//
+  // Transition relation                                                  //
+  //======================================================================//
+	next {
+    assume (tap_current_mode == mode_enclave);
+    call (tap_current_mode', tap_load_addr', tap_l_way', tap_store_addr', tap_store_data', tap_s_way') = EnclaveStep(tap_current_mode, tap_eid, tap_e_proof_op);
+	}
+}

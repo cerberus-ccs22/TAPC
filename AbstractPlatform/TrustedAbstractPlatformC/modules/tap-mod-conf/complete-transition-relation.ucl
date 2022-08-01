@@ -1,0 +1,36 @@
+/* The full transition relation that executes all operations available to the adversary
+   and enclave. This file should be run with full-enc-step.ucl and full-obs-step.ucl.
+*/
+module tap {
+  //======================================================================//
+  // Transition relation                                                  //
+  //======================================================================//
+  next {
+    case
+      (tap_current_mode == mode_untrusted) : {
+        call (tap_observation', tap_current_mode',
+              tap_enclave_dead', tap_status',
+              tap_excp_1', tap_excp_2',
+              tap_hit_1', tap_hit_2') = ObserverStep(
+                tap_observer, tap_current_mode,
+                tap_eid, tap_r_eid,
+                tap_r_parent_eid,
+                tap_r_proof_op, 
+                tap_r_pc, tap_r_read,
+                tap_r_write, tap_r_data, 
+                tap_l_vaddr, tap_s_vaddr, tap_s_data,
+                tap_r_pt_eid, tap_r_pt_va,
+                tap_pt_eid, tap_pt_vaddr,
+                tap_pt_valid, tap_pt_paddr,
+                tap_r_addr_valid, tap_r_addr_map,
+                tap_r_excl_vaddr, tap_r_excl_map,
+                tap_r_container_valid, tap_r_container_data,
+                tap_r_entrypoint, tap_r_bmap,
+                tap_r_l_way, tap_r_s_way);
+      }
+      (tap_current_mode == mode_enclave) : {
+        call (tap_current_mode', tap_load_addr', tap_l_way', tap_store_addr', tap_store_data', tap_s_way') = EnclaveStep(tap_current_mode, tap_eid, tap_e_proof_op);
+      }
+    esac
+  }
+}

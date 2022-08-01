@@ -1,0 +1,38 @@
+module integrity_proof {
+  //=============================================================================//
+  // Transition relation                                                         //
+  //=============================================================================//
+  next {
+    // Assume that the trusted enclave is not destroyed
+    // This covers the termination case because it can die after the transition step
+    assume (!enclave_dead && !cpu_1.tap_enclave_dead && !cpu_2.tap_enclave_dead);
+    assume (verif);
+
+    // // Havoc the adversary arugments and operation
+    // havoc r_eid; havoc r_proof_op; havoc r_regs;
+    // // Havoc the enclave operation
+    // havoc e_proof_op;
+    // // Havoc iter
+    // havoc iter;
+
+    // Assume that the attacker has access to only user side operations.
+    assume tap_proof_op_valid(r_proof_op);
+
+    // Assume that the enclave has access to only enclave operations.
+    assume tap_proof_op_valid_in_enclave(e_proof_op);
+
+    // Step tap trace 1
+    next(cpu_1);
+
+    // Step tap trace 2
+    // NOTE: If the mode is untrusted, then we only step if trace 1 executes the enclave `eid`.
+    //       i.e. When trace 1 doesn't switch from untrusted context, stutter
+    if (current_mode == mode_untrusted ==> current_mode' == mode_enclave) {
+        next(cpu_2);
+    }
+
+    // Set the shared mode and enclave `eid` state
+    current_mode' = current_mode_1';
+    enclave_dead' = enclave_dead_1';
+  }
+}
