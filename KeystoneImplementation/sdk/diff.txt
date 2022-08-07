@@ -1,0 +1,1223 @@
+diff --git a/examples/CMakeLists.txt b/examples/CMakeLists.txt
+index 953afa9..54d88d0 100644
+--- a/examples/CMakeLists.txt
++++ b/examples/CMakeLists.txt
+@@ -38,6 +38,6 @@ add_custom_target("examples")
+ 
+ # add all examples below
+ add_subdirectory(hello)
+-add_subdirectory(hello-native)
+-add_subdirectory(attestation)
++# add_subdirectory(hello-native)
++# add_subdirectory(attestation)
+ add_subdirectory(tests)
+diff --git a/examples/hello/CMakeLists.txt b/examples/hello/CMakeLists.txt
+index 9f5ee48..2415004 100644
+--- a/examples/hello/CMakeLists.txt
++++ b/examples/hello/CMakeLists.txt
+@@ -8,13 +8,16 @@ set(package_script "./hello-runner hello eyrie-rt")
+ if(RISCV32)
+   set(eyrie_plugins "freemem untrusted_io_syscall linux_syscall env_setup rv32")
+ else()
+-  set(eyrie_plugins "freemem untrusted_io_syscall linux_syscall env_setup")
++  set(eyrie_plugins "freemem untrusted_io_syscall linux_syscall env_setup untrusted_net_syscall")
+ endif()
+ 
+ # eapp
+ 
+-add_executable(${eapp_bin} ${eapp_src})
+-target_link_libraries(${eapp_bin} "-static")
++#add_executable(${eapp_bin} ${eapp_src})
++#target_link_libraries(${eapp_bin} "-static")
++add_custom_command(OUTPUT ${eapp_bin}
++  COMMAND
++  riscv64-unknown-linux-musl-gcc -static -o ${CMAKE_CURRENT_BINARY_DIR}/${eapp_bin} ${CMAKE_CURRENT_SOURCE_DIR}/${eapp_src})
+ 
+ # host
+ 
+@@ -25,7 +28,7 @@ target_link_libraries(${host_bin} ${KEYSTONE_LIB_HOST} ${KEYSTONE_LIB_EDGE})
+ 
+ set(eyrie_files_to_copy .options_log eyrie-rt)
+ add_eyrie_runtime(${eapp_bin}-eyrie
+-  "v1.0.0"
++  "origin/dev-clone-runtime"
+   ${eyrie_plugins}
+   ${eyrie_files_to_copy})
+ 
+diff --git a/examples/hello/eapp/hello.c b/examples/hello/eapp/hello.c
+index c3102f1..78e9a63 100644
+--- a/examples/hello/eapp/hello.c
++++ b/examples/hello/eapp/hello.c
+@@ -1,7 +1,26 @@
+ #include <stdio.h>
++#include <stdlib.h>
++#include <stdint.h>
++#include <stddef.h>
+ 
+ int main()
+ {
+-  printf("hello, world!\n");
++  int size = 16;
++  char * buf = (char*) malloc(1024*1024*size);
++  unsigned long cycle_start, cycle_end;
++
++  //*buf = 0x10;
++  int pid = fork();
++
++  if (pid) {
++    printf("parent\n");
++    return 0;
++  } else {
++    printf("child\n");
++    return 0;
++  }
++  //asm volatile("rdcycle %0" : "=r"(cycle_end));
++  //*buf = 0x2e;
++  // printf("%d, %ld\n", size, cycle_end - cycle_start);
+   return 0;
+ }
+diff --git a/examples/hello/host/host.cpp b/examples/hello/host/host.cpp
+index f17d645..6226377 100644
+--- a/examples/hello/host/host.cpp
++++ b/examples/hello/host/host.cpp
+@@ -2,8 +2,10 @@
+ // Copyright (c) 2018, The Regents of the University of California (Regents).
+ // All Rights Reserved. See LICENSE for license details.
+ //------------------------------------------------------------------------------
++#define IO_SYSCALL_WRAPPING
+ #include "edge/edge_call.h"
+ #include "host/keystone.h"
++#include "sys/wait.h"
+ 
+ using namespace Keystone;
+ 
+@@ -12,16 +14,41 @@ main(int argc, char** argv) {
+   Enclave enclave;
+   Params params;
+ 
+-  params.setFreeMemSize(1024 * 1024);
+-  params.setUntrustedMem(DEFAULT_UNTRUSTED_PTR, 1024 * 1024);
++  params.setFreeMemSize(2*1024*1024);
++  params.setUntrustedMem(DEFAULT_UNTRUSTED_PTR, 2 * 1024 * 1024);
+ 
+   enclave.init(argv[1], argv[2], params);
+ 
+   enclave.registerOcallDispatch(incoming_call_dispatch);
++
+   edge_call_init_internals(
+-      (uintptr_t)enclave.getSharedBuffer(), enclave.getSharedBufferSize());
++      (uintptr_t) enclave.getSharedBuffer(), (size_t) enclave.getSharedBufferSize());
++
++  uintptr_t encl_ret;
++  Error ret = enclave.run(&encl_ret); // enclave creates snapshot at some point
++
++  if (ret != Error::EnclaveSnapshot) {
++    printf("Enclave failed to create snapshot\n");
++    printf("Error: %d\n", ret);
++    return 1;
++  }
+ 
+-  enclave.run();
++  int pid = fork();
++  if (pid == 0) {
++    printf("Host Child\n");
++    Enclave cloned_enclave = *enclave.clone(200, pid);
++    printf("Resuming 1\n");
++    cloned_enclave.resume();
++    printf("Child Done\n");
++  } else {
++    printf("Host Parent 0\n");
++    Enclave cloned_enclave = *enclave.clone(200, pid);
++    printf("Resuming 2\n");
++    cloned_enclave.resume();
++    wait(NULL);
++    printf("Parent Done\n");
++  }
+ 
++  printf("Host is returning\n");
+   return 0;
+ }
+diff --git a/examples/tests/CMakeLists.txt b/examples/tests/CMakeLists.txt
+index 837013f..5710261 100644
+--- a/examples/tests/CMakeLists.txt
++++ b/examples/tests/CMakeLists.txt
+@@ -1,10 +1,9 @@
+-set(host_bin test-runner)
+-set(host_src test-runner.cpp edge_wrapper.cpp)
++set(host_bins test-runner test-runner-multiple)
+ 
+ if(RISCV32)
+-   set(eyrie_plugins "freemem rv32")
++   set(eyrie_plugins "freemem rv32 debug strace_debug")
+ else()
+-   set(eyrie_plugins "freemem")
++   set(eyrie_plugins "freemem linux_syscall")
+ endif()
+ 
+ set(package_name "tests.ke")
+@@ -15,15 +14,18 @@ set(package_script "./run-test.sh")
+ ###############################################
+ # to add a test, (1) add the test to the following variable
+ set(all_test_bins
+-  stack
+-  loop
+-  malloc
+-  long-nop
+-  fibonacci
+-  fib-bench
+-  attestation
+-  untrusted
+-  data-sealing)
++   fork
++   snapshot
++   stack
++   loop
++   malloc
++   long-nop
++   fibonacci
++   fib-bench
++   attestation
++   untrusted
++   data-sealing
++  )
+ 
+ # and (2) define the recipe of the test below:
+ 
+@@ -62,7 +64,7 @@ target_link_libraries(fib-bench ${KEYSTONE_LIB_EAPP})
+ add_executable(attestation attestation/attestation.c attestation/edge_wrapper.c)
+ target_link_libraries(attestation ${KEYSTONE_LIB_EAPP} ${KEYSTONE_LIB_EDGE})
+ 
+-# untrusted
++#untrusted
+ add_executable(untrusted untrusted/untrusted.c untrusted/edge_wrapper.c)
+ target_link_libraries(untrusted ${KEYSTONE_LIB_EAPP} ${KEYSTONE_LIB_EDGE})
+ 
+@@ -70,19 +72,27 @@ target_link_libraries(untrusted ${KEYSTONE_LIB_EAPP} ${KEYSTONE_LIB_EDGE})
+ add_executable(data-sealing data-sealing/data-sealing.c)
+ target_link_libraries(data-sealing ${KEYSTONE_LIB_EAPP} ${KEYSTONE_LIB_EDGE})
+ 
++# snapshot
++add_executable(snapshot snapshot/snapshot.c snapshot/edge_wrapper.c)
++target_link_libraries(snapshot ${KEYSTONE_LIB_EAPP} ${KEYSTONE_LIB_EDGE})
++
++# fork
++add_executable(fork fork/fork.c fork/edge_wrapper.c)
++target_link_libraries(fork ${KEYSTONE_LIB_EAPP} ${KEYSTONE_LIB_EDGE})
++
+ ###############################################
+ # a script for running all test enclaves
+ set(test_script_tmp ${CMAKE_CURRENT_BINARY_DIR}/tmp/run-test.sh)
+ set(test_script ${CMAKE_CURRENT_BINARY_DIR}/run-test.sh)
+ 
+ file(WRITE ${test_script_tmp} "")
+-foreach (test IN ITEMS ${all_test_bins})
++foreach (test IN ITEMS snapshot)
+   file(APPEND ${test_script_tmp} "echo 'testing ${test}'\n")
+   if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${test}/retval)
+     execute_process(COMMAND cat ${CMAKE_CURRENT_SOURCE_DIR}/${test}/retval OUTPUT_VARIABLE retval)
+-    file(APPEND ${test_script_tmp} "./${host_bin} ${test} eyrie-rt --retval ${retval}")
++    file(APPEND ${test_script_tmp} "./test-runner ${test} eyrie-rt --retval ${retval}")
+   else()
+-    file(APPEND ${test_script_tmp} "./${host_bin} ${test} eyrie-rt\n")
++    file(APPEND ${test_script_tmp} "./test-runner ${test} eyrie-rt\n")
+   endif()
+ endforeach(test)
+ 
+@@ -97,14 +107,16 @@ set_target_properties(${all_test_bins}
+ 
+ # host
+ 
+-add_executable(${host_bin} ${host_src})
+-target_link_libraries(${host_bin} ${KEYSTONE_LIB_HOST} ${KEYSTONE_LIB_EDGE} ${KEYSTONE_LIB_VERIFIER})
++add_executable(test-runner test-runner.cpp edge_wrapper.cpp)
++add_executable(test-runner-multiple test-runner-multiple.cpp)
++target_link_libraries(test-runner ${KEYSTONE_LIB_HOST} ${KEYSTONE_LIB_EDGE} ${KEYSTONE_LIB_VERIFIER})
++target_link_libraries(test-runner-multiple ${KEYSTONE_LIB_HOST})
+ 
+ # add target for Eyrie runtime (see keystone.cmake)
+ 
+ set(eyrie_files_to_copy .options_log eyrie-rt)
+ add_eyrie_runtime(test-eyrie
+-  "v1.0.0"
++  "origin/dev-clone-runtime"
+   ${eyrie_plugins}
+   ${eyrie_files_to_copy})
+ 
+@@ -113,7 +125,7 @@ add_eyrie_runtime(test-eyrie
+ add_keystone_package(test-package
+   ${package_name}
+   ${package_script}
+-  ${test_script} ${eyrie_files_to_copy} ${all_test_bins} ${host_bin}
++  ${test_script} ${eyrie_files_to_copy} ${all_test_bins} ${host_bins}
+   )
+ 
+ add_dependencies(test-package test-eyrie)
+diff --git a/examples/tests/edge_wrapper.cpp b/examples/tests/edge_wrapper.cpp
+index 73f2d7a..358376a 100644
+--- a/examples/tests/edge_wrapper.cpp
++++ b/examples/tests/edge_wrapper.cpp
+@@ -20,9 +20,8 @@ edge_init(Keystone::Enclave* enclave) {
+   register_call(OCALL_PRINT_VALUE, print_value_wrapper);
+   register_call(OCALL_COPY_REPORT, copy_report_wrapper);
+   register_call(OCALL_GET_STRING, get_host_string_wrapper);
+-
+   edge_call_init_internals(
+-      (uintptr_t)enclave->getSharedBuffer(), enclave->getSharedBufferSize());
++      (uintptr_t) enclave->getSharedBuffer(), (size_t) enclave->getSharedBufferSize());
+ }
+ void
+ print_buffer_wrapper(void* buffer) {
+diff --git a/examples/tests/fork/edge_wrapper.c b/examples/tests/fork/edge_wrapper.c
+new file mode 100644
+index 0000000..4c7b4da
+--- /dev/null
++++ b/examples/tests/fork/edge_wrapper.c
+@@ -0,0 +1,34 @@
++//******************************************************************************
++// Copyright (c) 2018, The Regents of the University of California (Regents).
++// All Rights Reserved. See LICENSE for license details.
++//------------------------------------------------------------------------------
++#include "edge/edge_call.h"
++#include "edge_wrapper.h"
++#include "app/eapp_utils.h"
++#include "app/string.h"
++#include "app/syscall.h"
++
++void edge_init(){
++  /* Nothing for now, will probably register buffers/callsites
++     later */
++}
++
++void ocall_print_value(unsigned long val){
++
++  unsigned long val_ = val;
++  ocall(2, &val_, sizeof(unsigned long), 0, 0);
++
++  return;
++}
++
++unsigned long ocall_print_buffer(char* data, size_t data_len){
++
++  unsigned long retval;
++  ocall(1, data, data_len, &retval ,sizeof(unsigned long));
++
++  return retval;
++}
++
++void ocall_copy_report(void* report, size_t len) {
++  ocall(3, report, len, 0, 0);
++}
+diff --git a/examples/tests/fork/edge_wrapper.h b/examples/tests/fork/edge_wrapper.h
+new file mode 100644
+index 0000000..e09b7ca
+--- /dev/null
++++ b/examples/tests/fork/edge_wrapper.h
+@@ -0,0 +1,14 @@
++//******************************************************************************
++// Copyright (c) 2018, The Regents of the University of California (Regents).
++// All Rights Reserved. See LICENSE for license details.
++//------------------------------------------------------------------------------
++#ifndef _EDGE_WRAPPER_H_
++#define _EDGE_WRAPPER_H_
++
++void edge_init();
++
++unsigned long ocall_print_buffer(char* data, size_t data_len);
++void ocall_print_value(unsigned long val);
++
++void ocall_copy_report(void* report, size_t len);
++#endif /* _EDGE_WRAPPER_H_ */
+diff --git a/examples/tests/fork/fork.c b/examples/tests/fork/fork.c
+new file mode 100644
+index 0000000..64e8fd4
+--- /dev/null
++++ b/examples/tests/fork/fork.c
+@@ -0,0 +1,20 @@
++//******************************************************************************
++// Copyright (c) 2018, The Regents of the University of California (Regents).
++// All Rights Reserved. See LICENSE for license details.
++//------------------------------------------------------------------------------
++#include "app/eapp_utils.h"
++#include "app/string.h"
++#include "app/syscall.h"
++
++#include "edge_wrapper.h"
++int global_variable;
++void EAPP_ENTRY eapp_entry(){
++  //edge_init();
++
++  sbi_enclave_snapshot();
++
++  // clone (220)
++  int pid = SYSCALL_0(220);
++
++  EAPP_RETURN(pid);
++}
+diff --git a/examples/tests/fork/retval b/examples/tests/fork/retval
+new file mode 100644
+index 0000000..5e2ca0c
+--- /dev/null
++++ b/examples/tests/fork/retval
+@@ -0,0 +1 @@
++57005
+diff --git a/examples/tests/snapshot/edge_wrapper.c b/examples/tests/snapshot/edge_wrapper.c
+new file mode 100644
+index 0000000..4c7b4da
+--- /dev/null
++++ b/examples/tests/snapshot/edge_wrapper.c
+@@ -0,0 +1,34 @@
++//******************************************************************************
++// Copyright (c) 2018, The Regents of the University of California (Regents).
++// All Rights Reserved. See LICENSE for license details.
++//------------------------------------------------------------------------------
++#include "edge/edge_call.h"
++#include "edge_wrapper.h"
++#include "app/eapp_utils.h"
++#include "app/string.h"
++#include "app/syscall.h"
++
++void edge_init(){
++  /* Nothing for now, will probably register buffers/callsites
++     later */
++}
++
++void ocall_print_value(unsigned long val){
++
++  unsigned long val_ = val;
++  ocall(2, &val_, sizeof(unsigned long), 0, 0);
++
++  return;
++}
++
++unsigned long ocall_print_buffer(char* data, size_t data_len){
++
++  unsigned long retval;
++  ocall(1, data, data_len, &retval ,sizeof(unsigned long));
++
++  return retval;
++}
++
++void ocall_copy_report(void* report, size_t len) {
++  ocall(3, report, len, 0, 0);
++}
+diff --git a/examples/tests/snapshot/edge_wrapper.h b/examples/tests/snapshot/edge_wrapper.h
+new file mode 100644
+index 0000000..e09b7ca
+--- /dev/null
++++ b/examples/tests/snapshot/edge_wrapper.h
+@@ -0,0 +1,14 @@
++//******************************************************************************
++// Copyright (c) 2018, The Regents of the University of California (Regents).
++// All Rights Reserved. See LICENSE for license details.
++//------------------------------------------------------------------------------
++#ifndef _EDGE_WRAPPER_H_
++#define _EDGE_WRAPPER_H_
++
++void edge_init();
++
++unsigned long ocall_print_buffer(char* data, size_t data_len);
++void ocall_print_value(unsigned long val);
++
++void ocall_copy_report(void* report, size_t len);
++#endif /* _EDGE_WRAPPER_H_ */
+diff --git a/examples/tests/snapshot/retval b/examples/tests/snapshot/retval
+new file mode 100644
+index 0000000..5e2ca0c
+--- /dev/null
++++ b/examples/tests/snapshot/retval
+@@ -0,0 +1 @@
++57005
+diff --git a/examples/tests/snapshot/snapshot.c b/examples/tests/snapshot/snapshot.c
+new file mode 100644
+index 0000000..a9a144b
+--- /dev/null
++++ b/examples/tests/snapshot/snapshot.c
+@@ -0,0 +1,30 @@
++//******************************************************************************
++// Copyright (c) 2018, The Regents of the University of California (Regents).
++// All Rights Reserved. See LICENSE for license details.
++//------------------------------------------------------------------------------
++#include "app/eapp_utils.h"
++#include "app/string.h"
++#include "app/syscall.h"
++#include "edge_wrapper.h"
++#include "malloc.h"
++
++int global_variable;
++void EAPP_ENTRY eapp_entry(){
++  edge_init();
++
++  int * ptr = (int*) malloc(512*1024*1024);
++
++  *ptr = 0xf;
++
++  ocall_print_value(*ptr);
++
++  sbi_enclave_snapshot();
++
++  *ptr = 0xd;
++
++  global_variable = 0xdea0;
++
++  ocall_print_value(global_variable + *ptr);
++
++  EAPP_RETURN(global_variable + *ptr);
++}
+diff --git a/examples/tests/test-runner.cpp b/examples/tests/test-runner.cpp
+index 02fb60c..6d48e42 100644
+--- a/examples/tests/test-runner.cpp
++++ b/examples/tests/test-runner.cpp
+@@ -67,7 +67,7 @@ main(int argc, char** argv) {
+   int load_only   = 0;
+ 
+   size_t untrusted_size = 2 * 1024 * 1024;
+-  size_t freemem_size   = 48 * 1024 * 1024;
++  size_t freemem_size   = 512 * 1024 * 1024 - 45*1024*4;
+   uintptr_t utm_ptr     = (uintptr_t)DEFAULT_UNTRUSTED_PTR;
+   bool retval_exist = false;
+   unsigned long retval = 0;
+diff --git a/include/app/syscall.h b/include/app/syscall.h
+index d8bda79..06e6372 100644
+--- a/include/app/syscall.h
++++ b/include/app/syscall.h
+@@ -14,6 +14,7 @@
+ #define SYSCALL_SHAREDCOPY 1002
+ #define SYSCALL_ATTEST_ENCLAVE 1003
+ #define SYSCALL_GET_SEALING_KEY 1004
++#define SYSCALL_SNAPSHOT 1005
+ #define SYSCALL_EXIT 1101
+ 
+ #define SYSCALL(which, arg0, arg1, arg2, arg3, arg4)           \
+@@ -53,6 +54,9 @@ untrusted_mmap();
+ int
+ attest_enclave(void* report, void* data, size_t size);
+ 
++int
++sbi_enclave_snapshot();
++
+ int
+ get_sealing_key(
+     struct sealing_key* sealing_key_struct, size_t sealing_key_struct_size,
+diff --git a/include/host/Enclave.hpp b/include/host/Enclave.hpp
+index 88125e0..cd8c830 100644
+--- a/include/host/Enclave.hpp
++++ b/include/host/Enclave.hpp
+@@ -25,6 +25,7 @@ extern "C" {
+ #include "KeystoneDevice.hpp"
+ #include "Memory.hpp"
+ #include "Params.hpp"
++#include <list>
+ 
+ namespace Keystone {
+ 
+@@ -40,13 +41,14 @@ class Enclave {
+   char hash[MDSIZE];
+   hash_ctx_t hash_ctx;
+   uintptr_t runtime_stk_sz;
++  uint64_t minPages;
++
+   void* shared_buffer;
+   size_t shared_buffer_size;
+   OcallFunc oFuncDispatch;
+   bool mapUntrusted(size_t size);
+   bool allocPage(uintptr_t va, uintptr_t src, unsigned int mode);
+   bool initStack(uintptr_t start, size_t size, bool is_rt);
+-  Error loadUntrusted();
+   bool mapElf(ElfFile* file);
+   Error loadElf(ElfFile* file);
+   Error validate_and_hash_enclave(struct runtime_params_t args);
+@@ -55,6 +57,9 @@ class Enclave {
+   bool initDevice();
+   bool prepareEnclave(uintptr_t alternatePhysAddr);
+   bool initMemory();
++  Error loopErrorHandler(Error ret, uintptr_t* retptr = nullptr);
++  Error initEnclaveWithClone(int eid, bool isSimulated, size_t minPages, uintptr_t retval);
++
+ 
+  public:
+   Enclave();
+@@ -63,12 +68,15 @@ class Enclave {
+   void* getSharedBuffer();
+   size_t getSharedBufferSize();
+   Error registerOcallDispatch(OcallFunc func);
++  Error init(Params params);
+   Error init(const char* filepath, const char* runtime, Params parameters);
+   Error init(
+       const char* eapppath, const char* runtimepath, Params _params,
+       uintptr_t alternatePhysAddr);
+   Error destroy();
+   Error run(uintptr_t* ret = nullptr);
++  Error resume(uintptr_t* ret = nullptr);
++  Enclave* clone(size_t minPages, uintptr_t retval);
+ };
+ 
+ uint64_t
+diff --git a/include/host/Error.hpp b/include/host/Error.hpp
+index f241bc6..166755d 100644
+--- a/include/host/Error.hpp
++++ b/include/host/Error.hpp
+@@ -25,6 +25,9 @@ enum class Error {
+   PageAllocationFailure,
+   EdgeCallHost,
+   EnclaveInterrupted,
++  EnclaveSnapshot,
++  EnclaveCloneRequested,
++  SnapshotInvalid,
+ };
+ 
+ }  // namespace Keystone
+diff --git a/include/host/KeystoneDevice.hpp b/include/host/KeystoneDevice.hpp
+index 8af1678..620ea84 100644
+--- a/include/host/KeystoneDevice.hpp
++++ b/include/host/KeystoneDevice.hpp
+@@ -32,19 +32,24 @@ class KeystoneDevice {
+ 
+  public:
+   virtual uintptr_t getPhysAddr() { return physAddr; }
++  virtual int getEID() {return eid; }
++
+ 
+   KeystoneDevice();
+   virtual ~KeystoneDevice() {}
+-  virtual bool initDevice(Params params);
+-  virtual Error create(uint64_t minPages);
++  virtual bool initDevice();
++  virtual Error create(uint64_t minPages, uintptr_t is_clone);
+   virtual uintptr_t initUTM(size_t size);
+   virtual Error finalize(
+       uintptr_t runtimePhysAddr, uintptr_t eappPhysAddr, uintptr_t freePhysAddr,
+       struct runtime_params_t params);
+   virtual Error destroy();
++  virtual Error destroySnapshot(uintptr_t snapshot_eid);
+   virtual Error run(uintptr_t* ret);
+   virtual Error resume(uintptr_t* ret);
+   virtual void* map(uintptr_t addr, size_t size);
++  virtual Error clone_enclave(
++      struct keystone_ioctl_clone_enclave encl);
+ };
+ 
+ class MockKeystoneDevice : public KeystoneDevice {
+@@ -55,7 +60,7 @@ class MockKeystoneDevice : public KeystoneDevice {
+  public:
+   MockKeystoneDevice() {}
+   ~MockKeystoneDevice();
+-  bool initDevice(Params params);
++  bool initDevice();
+   Error create(uint64_t minPages);
+   uintptr_t initUTM(size_t size);
+   Error finalize(
+diff --git a/include/host/Memory.hpp b/include/host/Memory.hpp
+index a1bb937..d46eb58 100644
+--- a/include/host/Memory.hpp
++++ b/include/host/Memory.hpp
+@@ -73,6 +73,7 @@ class Memory {
+   ~Memory() {}
+   virtual void init(
+       KeystoneDevice* dev, uintptr_t phys_addr, size_t min_pages)  = 0;
++  void setDevice(KeystoneDevice* dev);
+   virtual uintptr_t readMem(uintptr_t src, size_t size)            = 0;
+   virtual void writeMem(uintptr_t src, uintptr_t dst, size_t size) = 0;
+   virtual uintptr_t allocMem(size_t size)                          = 0;
+@@ -107,7 +108,6 @@ class Memory {
+   KeystoneDevice* pDevice;
+   size_t epmSize;
+   uintptr_t epmFreeList;
+-  uintptr_t utmFreeList;
+   uintptr_t rootPageTable;
+   uintptr_t startAddr;
+ 
+diff --git a/include/host/common.h b/include/host/common.h
+index 30d7a18..6673d80 100644
+--- a/include/host/common.h
++++ b/include/host/common.h
+@@ -30,5 +30,6 @@
+ #define KEYSTONE_ENCLAVE_DONE 0
+ #define KEYSTONE_ENCLAVE_INTERRUPTED 100002
+ #define KEYSTONE_ENCLAVE_EDGE_CALL_HOST 100011
+-
++#define SBI_ERR_SM_ENCLAVE_SNAPSHOT 100017
++#define KEYSTONE_ENCLAVE_CLONE      100018
+ #endif
+diff --git a/include/host/keystone_user.h b/include/host/keystone_user.h
+index 0680e68..eee359d 100644
+--- a/include/host/keystone_user.h
++++ b/include/host/keystone_user.h
+@@ -23,6 +23,8 @@
+   _IOR(KEYSTONE_IOC_MAGIC, 0x06, struct keystone_ioctl_create_enclave)
+ #define KEYSTONE_IOC_UTM_INIT \
+   _IOR(KEYSTONE_IOC_MAGIC, 0x07, struct keystone_ioctl_create_enclave)
++#define KEYSTONE_IOC_CLONE_ENCLAVE \
++  _IOR(KEYSTONE_IOC_MAGIC, 0x08, struct keystone_ioctl_clone_enclave)
+ 
+ #define RT_NOEXEC 0
+ #define USER_NOEXEC 1
+@@ -30,6 +32,18 @@
+ #define USER_FULL 3
+ #define UTM_FULL 4
+ 
++struct keystone_ioctl_clone_enclave {
++  uintptr_t epm_paddr;
++  uintptr_t utm_paddr;
++
++  uintptr_t epm_size;
++  uintptr_t utm_size;
++
++  uintptr_t eid;
++  uintptr_t snapshot_eid;
++  uintptr_t retval;
++};
++
+ struct runtime_params_t {
+   uintptr_t runtime_entry;
+   uintptr_t user_entry;
+@@ -60,6 +74,8 @@ struct keystone_ioctl_create_enclave {
+   uintptr_t epm_size;
+   uintptr_t utm_size;
+ 
++  uintptr_t is_clone;
++
+   // Runtime Parameters
+   struct runtime_params_t params;
+ };
+diff --git a/src/app/syscall.c b/src/app/syscall.c
+index e6ee40a..5b6c806 100644
+--- a/src/app/syscall.c
++++ b/src/app/syscall.c
+@@ -24,6 +24,11 @@ attest_enclave(void* report, void* data, size_t size) {
+   return SYSCALL_3(SYSCALL_ATTEST_ENCLAVE, report, data, size);
+ }
+ 
++int
++sbi_enclave_snapshot() {
++  return SYSCALL_0(SYSCALL_SNAPSHOT);
++}
++
+ /* returns sealing key */
+ int
+ get_sealing_key(
+diff --git a/src/edge/edge_call.c b/src/edge/edge_call.c
+index aeba839..5b24f62 100644
+--- a/src/edge/edge_call.c
++++ b/src/edge/edge_call.c
+@@ -3,6 +3,7 @@
+ // All Rights Reserved. See LICENSE for license details.
+ //------------------------------------------------------------------------------
+ #include <edge_call.h>
++#include <stdio.h>
+ #include "string.h"
+ #include <sys/epoll.h>
+ #include <sys/socket.h>
+diff --git a/src/edge/edge_dispatch.c b/src/edge/edge_dispatch.c
+index 365b4eb..3bff873 100644
+--- a/src/edge/edge_dispatch.c
++++ b/src/edge/edge_dispatch.c
+@@ -3,6 +3,7 @@
+ // All Rights Reserved. See LICENSE for license details.
+ //------------------------------------------------------------------------------
+ #include "edge_call.h"
++#include "stdio.h"
+ 
+ #ifdef IO_SYSCALL_WRAPPING
+ #include "edge_syscall.h"
+@@ -22,7 +23,6 @@ incoming_call_dispatch(void* buffer) {
+     return;
+   }
+ #endif /*  IO_SYSCALL_WRAPPING */
+-
+   /* Otherwise try to lookup the call in the table */
+   if (edge_call->call_id > MAX_EDGE_CALL ||
+       edge_call_table[edge_call->call_id] == NULL) {
+diff --git a/src/host/Enclave.cpp b/src/host/Enclave.cpp
+index 7f1d1fa..321f4ff 100644
+--- a/src/host/Enclave.cpp
++++ b/src/host/Enclave.cpp
+@@ -45,20 +45,6 @@ calculate_required_pages(uint64_t eapp_sz, uint64_t rt_sz) {
+   return req_pages;
+ }
+ 
+-Error
+-Enclave::loadUntrusted() {
+-  uintptr_t va_start = ROUND_DOWN(params.getUntrustedMem(), PAGE_BITS);
+-  uintptr_t va_end   = ROUND_UP(params.getUntrustedEnd(), PAGE_BITS);
+-
+-  while (va_start < va_end) {
+-    if (!pMemory->allocPage(va_start, 0, UTM_FULL)) {
+-      return Error::PageAllocationFailure;
+-    }
+-    va_start += PAGE_SIZE;
+-  }
+-  return Error::Success;
+-}
+-
+ /* This function will be deprecated when we implement freemem */
+ bool
+ Enclave::initStack(uintptr_t start, size_t size, bool is_rt) {
+@@ -229,7 +215,6 @@ bool
+ Enclave::prepareEnclave(uintptr_t alternatePhysAddr) {
+   // FIXME: this will be deprecated with complete freemem support.
+   // We just add freemem size for now.
+-  uint64_t minPages;
+   minPages = ROUND_UP(params.getFreeMemSize(), PAGE_BITS) / PAGE_SIZE;
+   minPages += calculate_required_pages(
+       enclaveFile->getTotalMemorySize(), runtimeFile->getTotalMemorySize());
+@@ -240,7 +225,7 @@ Enclave::prepareEnclave(uintptr_t alternatePhysAddr) {
+   }
+ 
+   /* Call Enclave Driver */
+-  if (pDevice->create(minPages) != Error::Success) {
++  if (pDevice->create(minPages, 0) != Error::Success) {
+     return false;
+   }
+ 
+@@ -256,6 +241,59 @@ Enclave::prepareEnclave(uintptr_t alternatePhysAddr) {
+   return true;
+ }
+ 
++Error
++Enclave::initEnclaveWithClone(int parent_eid, bool isSimulated, size_t minPages, uintptr_t retval)
++{
++  assert(pDevice);
++  assert(pMemory);
++
++  // Create new, but clone
++  if (pDevice->create(minPages, 1) != Error::Success) {
++    return Error::IoctlErrorCreate;
++  }
++
++  pMemory->setDevice(pDevice);
++
++  uintptr_t utm_free = pMemory->allocUtm(params.getUntrustedSize());
++
++  pMemory->init(pDevice, pDevice->getPhysAddr(), minPages);
++
++  if (!mapUntrusted(params.getUntrustedSize())) {
++    ERROR(
++        "failed to finalize enclave - cannot obtain the untrusted buffer "
++        "pointer \n");
++  }
++
++  struct keystone_ioctl_clone_enclave encl;
++  encl.snapshot_eid = parent_eid;
++  encl.epm_paddr    = pDevice->getPhysAddr();
++  encl.epm_size     = PAGE_SIZE * minPages;
++  encl.utm_paddr    = utm_free;
++  /* simply use the same UTM size */
++  encl.utm_size     = params.getUntrustedSize();
++  encl.retval       = retval;
++
++  pDevice->clone_enclave(encl);
++  return Error::Success;
++}
++
++Error
++Enclave::init(Params _params) {
++  params = _params;
++  if (params.isSimulated()) {
++    pMemory = new SimulatedEnclaveMemory();
++    pDevice = new MockKeystoneDevice();
++  } else {
++    pMemory = new PhysicalEnclaveMemory();
++    pDevice = new KeystoneDevice();
++  }
++  if (!pDevice->initDevice()) {
++    destroy();
++    return Error::DeviceInitFailure;
++  }
++  return Error::Success;
++}
++
+ Error
+ Enclave::init(const char* eapppath, const char* runtimepath, Params _params) {
+   return this->init(eapppath, runtimepath, _params, (uintptr_t)0);
+@@ -270,25 +308,16 @@ Error
+ Enclave::init(
+     const char* eapppath, const char* runtimepath, Params _params,
+     uintptr_t alternatePhysAddr) {
+-  params = _params;
+ 
+-  if (params.isSimulated()) {
+-    pMemory = new SimulatedEnclaveMemory();
+-    pDevice = new MockKeystoneDevice();
+-  } else {
+-    pMemory = new PhysicalEnclaveMemory();
+-    pDevice = new KeystoneDevice();
++  Error ret = init(_params);
++  if (ret != Error::Success) {
++    return ret;
+   }
+ 
+   if (!initFiles(eapppath, runtimepath)) {
+     return Error::FileInitFailure;
+   }
+ 
+-  if (!pDevice->initDevice(params)) {
+-    destroy();
+-    return Error::DeviceInitFailure;
+-  }
+-
+   if (!prepareEnclave(alternatePhysAddr)) {
+     destroy();
+     return Error::DeviceError;
+@@ -338,17 +367,12 @@ Enclave::init(
+     return Error::DeviceError;
+   }
+ 
+-  if (loadUntrusted() != Error::Success) {
+-    ERROR("failed to load untrusted");
+-  }
+-
+   struct runtime_params_t runtimeParams;
+   runtimeParams.runtime_entry =
+       reinterpret_cast<uintptr_t>(runtimeFile->getEntryPoint());
+   runtimeParams.user_entry =
+       reinterpret_cast<uintptr_t>(enclaveFile->getEntryPoint());
+-  runtimeParams.untrusted_ptr =
+-      reinterpret_cast<uintptr_t>(params.getUntrustedMem());
++  runtimeParams.untrusted_ptr = reinterpret_cast<uintptr_t>(utm_free);
+   runtimeParams.untrusted_size =
+       reinterpret_cast<uintptr_t>(params.getUntrustedSize());
+ 
+@@ -411,7 +435,42 @@ Enclave::destroy() {
+     runtimeFile = NULL;
+   }
+ 
+-  return pDevice->destroy();
++  Error ret = pDevice->destroy();
++
++  return ret;
++}
++
++Error
++Enclave::loopErrorHandler(Error ret, uintptr_t* retval) {
++  while (true)
++  {
++    switch (ret) {
++      case Error::Success:
++        return Error::Success;
++      case Error::EnclaveInterrupted:
++        break;
++      case Error::EdgeCallHost:
++        {
++          if (oFuncDispatch) {
++            oFuncDispatch(getSharedBuffer());
++          }
++          break;
++        }
++      case Error::EnclaveSnapshot:
++        {
++          return ret;
++        }
++      default:
++        {
++          ERROR("failed to run enclave - error code: %ld", ret);
++          destroy();
++          return Error::DeviceError;
++        }
++    } /* switch */
++    ret = pDevice->resume(retval);
++  } /* while */
++
++  return Error::Success;
+ }
+ 
+ Error
+@@ -421,21 +480,29 @@ Enclave::run(uintptr_t* retval) {
+   }
+ 
+   Error ret = pDevice->run(retval);
+-  while (ret == Error::EdgeCallHost || ret == Error::EnclaveInterrupted) {
+-    /* enclave is stopped in the middle. */
+-    if (ret == Error::EdgeCallHost && oFuncDispatch != NULL) {
+-      oFuncDispatch(getSharedBuffer());
+-    }
+-    ret = pDevice->resume(retval);
+-  }
+ 
+-  if (ret != Error::Success) {
+-    ERROR("failed to run enclave - ioctl() failed");
+-    destroy();
+-    return Error::DeviceError;
++  return loopErrorHandler(ret, retval);
++}
++
++Error
++Enclave::resume(uintptr_t* retval) {
++  Error ret = pDevice->resume(retval);
++
++  return loopErrorHandler(ret, retval);
++}
++
++Enclave*
++Enclave::clone(size_t _minPages, uintptr_t retval) {
++  int eid = pDevice->getEID();
++
++  if (_minPages == 0) {
++    _minPages = minPages;
+   }
+ 
+-  return Error::Success;
++  Enclave *cloned = new Enclave;
++  cloned->init(params);
++  cloned->initEnclaveWithClone(eid, false, _minPages, retval);
++  return cloned;
+ }
+ 
+ void*
+@@ -454,4 +521,5 @@ Enclave::registerOcallDispatch(OcallFunc func) {
+   return Error::Success;
+ }
+ 
++
+ }  // namespace Keystone
+diff --git a/src/host/KeystoneDevice.cpp b/src/host/KeystoneDevice.cpp
+index 90597e8..6b26777 100644
+--- a/src/host/KeystoneDevice.cpp
++++ b/src/host/KeystoneDevice.cpp
+@@ -10,12 +10,13 @@ namespace Keystone {
+ KeystoneDevice::KeystoneDevice() { eid = -1; }
+ 
+ Error
+-KeystoneDevice::create(uint64_t minPages) {
++KeystoneDevice::create(uint64_t minPages, uintptr_t is_clone) {
+   struct keystone_ioctl_create_enclave encl;
+   encl.min_pages = minPages;
++  encl.is_clone  = is_clone;
+ 
+   if (ioctl(fd, KEYSTONE_IOC_CREATE_ENCLAVE, &encl)) {
+-    perror("ioctl error");
++    perror("[create] ioctl error");
+     eid = -1;
+     return Error::IoctlErrorCreate;
+   }
+@@ -50,7 +51,18 @@ KeystoneDevice::finalize(
+   encl.params        = params;
+ 
+   if (ioctl(fd, KEYSTONE_IOC_FINALIZE_ENCLAVE, &encl)) {
+-    perror("ioctl error");
++    perror("[finalize] ioctl error");
++    return Error::IoctlErrorFinalize;
++  }
++  return Error::Success;
++}
++
++Error
++KeystoneDevice::clone_enclave(
++    struct keystone_ioctl_clone_enclave encl) {
++  encl.eid = eid;
++  if (ioctl(fd, KEYSTONE_IOC_CLONE_ENCLAVE, &encl)) {
++    perror("[clone] ioctl error");
+     return Error::IoctlErrorFinalize;
+   }
+   return Error::Success;
+@@ -67,7 +79,25 @@ KeystoneDevice::destroy() {
+   }
+ 
+   if (ioctl(fd, KEYSTONE_IOC_DESTROY_ENCLAVE, &encl)) {
+-    perror("ioctl error");
++    perror("[destroy] ioctl error");
++    return Error::IoctlErrorDestroy;
++  }
++
++  return Error::Success;
++}
++
++Error
++KeystoneDevice::destroySnapshot(uintptr_t snapshot_eid) {
++  struct keystone_ioctl_create_enclave encl;
++  encl.eid = snapshot_eid;
++
++  /* if the snapshot has never created */
++  if (eid < 0) {
++    return Error::Success;
++  }
++
++  if (ioctl(fd, KEYSTONE_IOC_DESTROY_ENCLAVE, &encl)) {
++    perror("[destorySnapshot] ioctl error");
+     return Error::IoctlErrorDestroy;
+   }
+ 
+@@ -99,6 +129,13 @@ KeystoneDevice::__run(bool resume, uintptr_t* ret) {
+       return Error::EdgeCallHost;
+     case KEYSTONE_ENCLAVE_INTERRUPTED:
+       return Error::EnclaveInterrupted;
++    case KEYSTONE_ENCLAVE_CLONE:
++      return Error::EnclaveCloneRequested;
++    case SBI_ERR_SM_ENCLAVE_SNAPSHOT:
++      if (ret) {
++        *ret = encl.value;
++      }
++      return Error::EnclaveSnapshot;
+     case KEYSTONE_ENCLAVE_DONE:
+       if (ret) {
+         *ret = encl.value;
+@@ -132,7 +169,7 @@ KeystoneDevice::map(uintptr_t addr, size_t size) {
+ }
+ 
+ bool
+-KeystoneDevice::initDevice(Params params) {
++KeystoneDevice::initDevice() {
+   /* open device driver */
+   fd = open(KEYSTONE_DEV_PATH, O_RDWR);
+   if (fd < 0) {
+@@ -176,7 +213,7 @@ MockKeystoneDevice::resume(uintptr_t* ret) {
+ }
+ 
+ bool
+-MockKeystoneDevice::initDevice(Params params) {
++MockKeystoneDevice::initDevice() {
+   return true;
+ }
+ 
+diff --git a/src/host/Memory.cpp b/src/host/Memory.cpp
+index dd4e7fb..7c0a926 100644
+--- a/src/host/Memory.cpp
++++ b/src/host/Memory.cpp
+@@ -10,11 +10,15 @@ namespace Keystone {
+ 
+ Memory::Memory() {
+   epmFreeList   = 0;
+-  utmFreeList   = 0;
+   rootPageTable = 0;
+   startAddr     = 0;
+ }
+ 
++void
++Memory::setDevice(KeystoneDevice* dev) {
++  pDevice = dev;
++}
++
+ void
+ Memory::startRuntimeMem() {
+   runtimePhysAddr = getCurrentEPMAddress();
+@@ -59,12 +63,20 @@ Memory::pt_idx(uintptr_t addr, int level) {
+ bool
+ Memory::allocPage(uintptr_t va, uintptr_t src, unsigned int mode) {
+   uintptr_t page_addr;
+-  uintptr_t* pFreeList = (mode == UTM_FULL ? &utmFreeList : &epmFreeList);
++  uintptr_t* pFreeList = &epmFreeList;
+ 
+   pte* pte = __ept_walk_create(va);
+ 
+   /* if the page has been already allocated, return the page */
+   if (pte_val(*pte) & PTE_V) {
++    // page_addr = *pFreeList >> PAGE_BITS;
++
++    // *pte = pte_create(
++    //       page_addr, PTE_D | PTE_A | PTE_R | PTE_W | PTE_X | PTE_U | PTE_V);
++
++    // printf("allocated already\n");
++    // printf("va: %p, src: %p, mode: %d, pFreeList:%p\n", va, src, mode,
++    // *pFreeList); *pFreeList += PAGE_SIZE;
+     return true;
+   }
+ 
+@@ -94,11 +106,6 @@ Memory::allocPage(uintptr_t va, uintptr_t src, unsigned int mode) {
+       writeMem(src, (uintptr_t)page_addr << PAGE_BITS, PAGE_SIZE);
+       break;
+     }
+-    case UTM_FULL: {
+-      assert(!src);
+-      *pte = pte_create(page_addr, PTE_D | PTE_A | PTE_R | PTE_W | PTE_V);
+-      break;
+-    }
+     default: {
+       PERROR("failed to add page - mode is invalid");
+       return false;
+@@ -188,12 +195,9 @@ Memory::validateAndHashEpm(
+     /* Check for blatently invalid mappings */
+     int map_in_epm =
+         (phys_addr >= startAddr && phys_addr < startAddr + epmSize);
+-    int map_in_utm =
+-        (phys_addr >= utmPhysAddr && phys_addr < utmPhysAddr + untrustedSize);
+ 
+-    /* EPM may map anything, UTM may not map pgtables */
+-    if (!map_in_epm && (!map_in_utm || level != 1)) {
+-      printf("1\n");
++    if (!map_in_epm) {
++      printf("invalid VA mapping\n");
+       goto fatal_bail;
+     }
+ 
+@@ -223,8 +227,6 @@ Memory::validateAndHashEpm(
+        * V1 < V2  ==> P1 < P2  (Only for within a given space)
+        *
+        * V1 != V2 ==> P1 != P2
+-       *
+-       * We also validate that all utm vaddrs -> utm paddrs
+        */
+       int in_runtime =
+           ((phys_addr >= runtimePhysAddr) && (phys_addr < eappPhysAddr));
+@@ -235,12 +237,6 @@ Memory::validateAndHashEpm(
+         goto fatal_bail;
+       }
+ 
+-      /* If the vaddr is in UTM, the paddr must be in UTM */
+-      if (va_start >= utmPhysAddr && va_start < (utmPhysAddr + untrustedSize) &&
+-          !map_in_utm) {
+-        goto fatal_bail;
+-      }
+-
+       /* Do linear mapping validation */
+       if (in_runtime) {
+         if (phys_addr <= *runtime_max_seen) {
+@@ -254,11 +250,7 @@ Memory::validateAndHashEpm(
+         } else {
+           *user_max_seen = phys_addr;
+         }
+-      } else if (map_in_utm) {
+-        // we checked this above, its OK
+       } else {
+-        //        printf("BAD GENERIC MAP %x %x %x\n", in_runtime, in_user,
+-        //        map_in_utm);
+         goto fatal_bail;
+       }
+ 
+diff --git a/src/host/PhysicalEnclaveMemory.cpp b/src/host/PhysicalEnclaveMemory.cpp
+index 01d9ba8..13de79e 100644
+--- a/src/host/PhysicalEnclaveMemory.cpp
++++ b/src/host/PhysicalEnclaveMemory.cpp
+@@ -9,7 +9,7 @@ namespace Keystone {
+ void
+ PhysicalEnclaveMemory::init(
+     KeystoneDevice* dev, uintptr_t phys_addr, size_t min_pages) {
+-  pDevice = dev;
++  setDevice(dev);
+   // TODO(dayeol): need to set actual EPM size
+   epmSize       = PAGE_SIZE * min_pages;
+   rootPageTable = allocMem(PAGE_SIZE);
+@@ -19,8 +19,8 @@ PhysicalEnclaveMemory::init(
+ 
+ uintptr_t
+ PhysicalEnclaveMemory::allocUtm(size_t size) {
++  assert(pDevice);
+   uintptr_t ret = pDevice->initUTM(size);
+-  utmFreeList   = ret;
+   untrustedSize = size;
+   utmPhysAddr   = ret;
+   return ret;
+diff --git a/src/host/SimulatedEnclaveMemory.cpp b/src/host/SimulatedEnclaveMemory.cpp
+index 3c726cd..a71f1de 100644
+--- a/src/host/SimulatedEnclaveMemory.cpp
++++ b/src/host/SimulatedEnclaveMemory.cpp
+@@ -9,7 +9,7 @@ namespace Keystone {
+ void
+ SimulatedEnclaveMemory::init(
+     KeystoneDevice* dev, uintptr_t phys_addr, size_t min_pages) {
+-  pDevice       = dev;
++  setDevice(dev);
+   epmSize       = PAGE_SIZE * min_pages;
+   rootPageTable = allocMem(PAGE_SIZE * min_pages);
+   startAddr     = rootPageTable;
+@@ -32,10 +32,9 @@ SimulatedEnclaveMemory::allocMem(size_t size) {
+ 
+ uintptr_t
+ SimulatedEnclaveMemory::allocUtm(size_t size) {
+-  utmFreeList   = allocMem(size);
++  utmPhysAddr   = allocMem(size);
+   untrustedSize = size;
+-  utmPhysAddr   = utmFreeList;
+-  return utmFreeList;
++  return utmPhysAddr;
+ }
+ 
+ uintptr_t

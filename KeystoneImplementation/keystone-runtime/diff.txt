@@ -1,0 +1,1229 @@
+diff --git a/Makefile b/Makefile
+index a9668f6..75e2f4e 100644
+--- a/Makefile
++++ b/Makefile
+@@ -9,7 +9,7 @@ endif
+ 
+ CFLAGS = -Wall -Werror -fPIC -fno-builtin -std=c11 -g $(OPTIONS_FLAGS)
+ SRCS = aes.c sha256.c boot.c interrupt.c printf.c syscall.c string.c linux_wrap.c io_wrap.c net_wrap.c rt_util.c mm.c env.c freemem.c paging.c sbi.c merkle.c page_swap.c vm.c
+-ASM_SRCS = entry.S
++ASM_SRCS = entry.S trampoline.S
+ RUNTIME = eyrie-rt
+ LINK = $(CROSS_COMPILE)ld
+ LDFLAGS = -static -nostdlib $(shell $(CC) --print-file-name=libgcc.a)
+@@ -25,7 +25,7 @@ DISK_IMAGE = ../busybear-linux/busybear.bin
+ MOUNT_DIR = ./tmp_busybear
+ 
+ OBJS = $(patsubst %.c,obj/%.o,$(SRCS))
+-ASM_OBJS = $(patsubst %.S,obj/%.o,$(ASM_SRCS))
++ASM_OBJS = $(patsubst %.S,obj/%.S.o,$(ASM_SRCS))
+ OBJ_DIR_EXISTS = obj/.exists
+ 
+ TMPLIB = uaccess.o
+@@ -52,7 +52,7 @@ $(RUNTIME): $(ASM_OBJS) $(OBJS) $(SDK_EDGE_LIB) $(TMPLIB)
+ 	$(LINK) -o $@ $^ -T runtime.lds $(LDFLAGS)
+ 	$(OBJCOPY) --add-section .options_log=.options_log --set-section-flags .options_log=noload,readonly $(RUNTIME)
+ 
+-$(ASM_OBJS): $(ASM_SRCS) $(OBJ_DIR_EXISTS)
++obj/%.S.o: %.S $(OBJ_DIR_EXISTS)
+ 	$(CC) $(CFLAGS) -c $< -o $@
+ 
+ $(OBJ_DIR_EXISTS):
+diff --git a/boot.c b/boot.c
+index ebf69da..c8073be 100644
+--- a/boot.c
++++ b/boot.c
+@@ -39,37 +39,7 @@ map_physical_memory(uintptr_t dram_base,
+       ptr, load_l2_page_table, load_l3_page_table);
+ }
+ 
+-void
+-remap_kernel_space(uintptr_t runtime_base,
+-                   uintptr_t runtime_size)
+-{
+-  /* eyrie runtime is supposed to be smaller than a megapage */
+ 
+-  #if __riscv_xlen == 64
+-  assert(runtime_size <= RISCV_GET_LVL_PGSIZE(2));
+-  #elif __riscv_xlen == 32
+-  assert(runtime_size <= RISCV_GET_LVL_PGSIZE(1));
+-  #endif 
+-
+-  map_with_reserved_page_table(runtime_base, runtime_size,
+-     runtime_va_start, kernel_l2_page_table, kernel_l3_page_table);
+-}
+-
+-void
+-copy_root_page_table()
+-{
+-  /* the old table lives in the first page */
+-  pte* old_root_page_table = (pte*) EYRIE_LOAD_START;
+-  int i;
+-
+-  /* copy all valid entries of the old root page table */
+-  for (i = 0; i < BIT(RISCV_PT_INDEX_BITS); i++) {
+-    if (old_root_page_table[i] & PTE_V &&
+-        !(root_page_table[i] & PTE_V)) {
+-      root_page_table[i] = old_root_page_table[i];
+-    }
+-  }
+-}
+ 
+ /* initialize free memory with a simple page allocator*/
+ void
+@@ -114,17 +84,17 @@ eyrie_boot(uintptr_t dummy, // $a0 contains the return value from the SBI
+            uintptr_t runtime_paddr,
+            uintptr_t user_paddr,
+            uintptr_t free_paddr,
+-           uintptr_t utm_vaddr,
++           uintptr_t utm_paddr,
+            uintptr_t utm_size)
+ {
+   /* set initial values */
+   load_pa_start = dram_base;
+-  shared_buffer = utm_vaddr;
+-  shared_buffer_size = utm_size;
++  load_pa_size = dram_size;
+   runtime_va_start = (uintptr_t) &rt_base;
++  runtime_size = user_paddr - runtime_paddr;
+   kernel_offset = runtime_va_start - runtime_paddr;
+ 
+-  debug("UTM : 0x%lx-0x%lx (%u KB)", utm_vaddr, utm_vaddr+utm_size, utm_size/1024);
++  debug("UTM : 0x%lx-0x%lx (%u KB)", utm_paddr, utm_paddr+utm_size, utm_size/1024);
+   debug("DRAM: 0x%lx-0x%lx (%u KB)", dram_base, dram_base + dram_size, dram_size/1024);
+ #ifdef USE_FREEMEM
+   freemem_va_start = __va(free_paddr);
+@@ -133,7 +103,7 @@ eyrie_boot(uintptr_t dummy, // $a0 contains the return value from the SBI
+   debug("FREE: 0x%lx-0x%lx (%u KB), va 0x%lx", free_paddr, dram_base + dram_size, freemem_size/1024, freemem_va_start);
+ 
+   /* remap kernel VA */
+-  remap_kernel_space(runtime_paddr, user_paddr - runtime_paddr);
++  remap_kernel_space(runtime_paddr, runtime_size);
+   map_physical_memory(dram_base, dram_size);
+ 
+   /* switch to the new page table */
+@@ -142,6 +112,8 @@ eyrie_boot(uintptr_t dummy, // $a0 contains the return value from the SBI
+   /* copy valid entries from the old page table */
+   copy_root_page_table();
+ 
++  map_untrusted_memory(utm_paddr, utm_size);
++
+   /* initialize free memory */
+   init_freemem();
+ 
+diff --git a/entry.S b/entry.S
+index fc3aefa..b6cebff 100644
+--- a/entry.S
++++ b/entry.S
+@@ -10,7 +10,7 @@
+ #define LOAD lw
+ #define LOG_REGBYTES  2
+ #define WORD .word
+-#endif 
++#endif
+ 
+ #define LWU lwu
+ #define REGBYTES (1<<LOG_REGBYTES)
+@@ -233,7 +233,7 @@ rt_trap_table:
+   WORD not_implemented_fatal //9
+   WORD not_implemented_fatal //10
+   WORD not_implemented_fatal //11
+-  WORD not_implemented_fatal //12: fetch page fault - code always presents in memory
++  WORD rt_page_fault //12: fetch page fault - code always presents in memory
+   WORD rt_page_fault //13: load page fault - stack/heap access
+   WORD not_implemented_fatal //14
+   WORD rt_page_fault //15: store page fault - stack/heap access
+diff --git a/freemem.c b/freemem.c
+index ef93db9..5e3df40 100644
+--- a/freemem.c
++++ b/freemem.c
+@@ -35,7 +35,7 @@ __spa_get(bool zero)
+     else
+ #endif
+     {
+-      warn("eyrie simple page allocator cannot evict and free pages");
++      warn("eyrie simple page allocator failed to get a free page");
+       return 0;
+     }
+   }
+diff --git a/mm.c b/mm.c
+index bbd1392..b1ef2b4 100644
+--- a/mm.c
++++ b/mm.c
+@@ -33,7 +33,10 @@ __continue_walk_create(pte* root, uintptr_t addr, pte* pte)
+   return __walk_create(root, addr);
+ }
+ 
+-static pte*
++
++extern void copy_physical_page(uintptr_t dst, uintptr_t src, uintptr_t helper);
++extern void __copy_physical_page_switch_to_pa();
++  static pte*
+ __walk_internal(pte* root, uintptr_t addr, int create)
+ {
+   pte* t = root;
+@@ -45,10 +48,29 @@ __walk_internal(pte* root, uintptr_t addr, int create)
+     if (!(t[idx] & PTE_V))
+       return create ? __continue_walk_create(root, addr, &t[idx]) : 0;
+ 
++    /* mega or giga page */
++    if (t[idx] & (PTE_R | PTE_W | PTE_X))
++      break;
++
++    uintptr_t pa = pte_ppn(t[idx]) << RISCV_PAGE_BITS;
++    /* if the page is outside of the EPM, relocate */
++    if (pa < load_pa_start || pa >= load_pa_start + load_pa_size)
++    {
++      uintptr_t new_page = spa_get_zero();
++      assert(new_page);
++      debug("PA 0x%lx is outside of EPM! Moving to 0x%lx", pa, __pa(new_page));
++      copy_physical_page(
++          __pa(new_page), pa,
++          kernel_va_to_pa(__copy_physical_page_switch_to_pa));
++
++      unsigned long free_ppn = ppn(__pa(new_page));
++      t[idx] = pte_create(free_ppn, t[idx]);
++    }
++
+     t = (pte*) __va(pte_ppn(t[idx]) << RISCV_PAGE_BITS);
+   }
+ 
+-  return &t[RISCV_GET_PT_INDEX(addr, 3)];
++  return &t[RISCV_GET_PT_INDEX(addr, i)];
+ }
+ 
+ /* walk the page table and return PTE
+@@ -118,7 +140,11 @@ free_page(uintptr_t vpn){
+   paging_dec_user_page();
+ #endif
+   // Return phys page
+-  spa_put(__va(ppn << RISCV_PAGE_BITS));
++
++  // if pa is outside of EPM, skip
++  uintptr_t pa = ppn << RISCV_PAGE_BITS;
++  if (pa >= load_pa_start && pa < load_pa_start + load_pa_size)
++    spa_put(__va(ppn << RISCV_PAGE_BITS));
+ 
+   return;
+ 
+@@ -203,7 +229,7 @@ __map_with_reserved_page_table_32(uintptr_t dram_base,
+   if (!l2_pt) {
+     leaf_level = 1;
+     leaf_pt = root_page_table;
+-    dram_max = -1UL; 
++    dram_max = -1UL;
+   }
+ 
+   assert(dram_size <= dram_max);
+@@ -288,4 +314,99 @@ map_with_reserved_page_table(uintptr_t dram_base,
+   #endif
+ }
+ 
++uintptr_t
++enclave_map(uintptr_t base_addr, size_t base_size, uintptr_t ptr) {
++  int pte_flags = PTE_W | PTE_D | PTE_R | PTE_U | PTE_A;
++
++  // Find a continuous VA space that will fit the req. size
++  int req_pages = vpn(PAGE_UP(base_size));
++
++  if (test_va_range(vpn(ptr), req_pages) != req_pages) {
++    return 0;
++  }
++
++  if (map_pages(vpn(ptr), ppn(base_addr), req_pages, pte_flags) != req_pages) {
++    return 0;
++  }
++
++  return ptr;
++}
++
++uintptr_t
++map_page(uintptr_t vpn, uintptr_t phys_ppn, int flags) {
++  pte* pte = __walk_create(root_page_table, vpn << RISCV_PAGE_BITS);
++  assert(flags & PTE_U);
++  if (!pte) return 0;
++
++  if (*pte & PTE_V) return __va(*pte << RISCV_PAGE_BITS);
++
++  *pte = pte_create(phys_ppn, flags | PTE_V);
++#ifdef USE_PAGING
++  paging_inc_user_page();
++#endif
++  return phys_ppn << RISCV_PAGE_BITS;
++}
++
++size_t
++map_pages(uintptr_t vpn, uintptr_t phys_ppn, size_t count, int flags) {
++  unsigned int i;
++  for (i = 0; i < count; i++) {
++    if (!map_page(vpn + i, phys_ppn + i, flags)) break;
++  }
++
++  return i;
++}
++
++void
++map_untrusted_memory(uintptr_t base,
++                     uintptr_t size)
++{
++  uintptr_t ptr = EYRIE_UNTRUSTED_START;
++
++  /* untrusted memory is smaller than a megapage (2 MB in RV64, 4MB in RV32) */
++  #if __riscv_xlen == 64
++  assert(size <= RISCV_GET_LVL_PGSIZE(2));
++  #elif __riscv_xlen == 32
++  assert(size <= RISCV_GET_LVL_PGSIZE(1));
++  #endif
++
++  map_with_reserved_page_table(base, size,
++      ptr, utm_l2_page_table, utm_l3_page_table);
++
++  shared_buffer = ptr;
++  shared_buffer_size = size;
++}
++
++void
++copy_root_page_table()
++{
++  /* the old table lives in the first page */
++  pte* old_root_page_table = (pte*) EYRIE_LOAD_START;
++  int i;
++
++  /* copy all valid entries of the old root page table */
++  for (i = 0; i < BIT(RISCV_PT_INDEX_BITS); i++) {
++    if (old_root_page_table[i] & PTE_V &&
++        !(root_page_table[i] & PTE_V)) {
++      root_page_table[i] = old_root_page_table[i];
++    }
++  }
++}
++
++void
++remap_kernel_space(uintptr_t runtime_base,
++                   uintptr_t runtime_size)
++{
++  /* eyrie runtime is supposed to be smaller than a megapage */
++
++  #if __riscv_xlen == 64
++  assert(runtime_size <= RISCV_GET_LVL_PGSIZE(2));
++  #elif __riscv_xlen == 32
++  assert(runtime_size <= RISCV_GET_LVL_PGSIZE(1));
++  #endif
++
++  map_with_reserved_page_table(runtime_base, runtime_size,
++     runtime_va_start, kernel_l2_page_table, kernel_l3_page_table);
++}
++
+ #endif /* USE_FREEMEM */
+diff --git a/mm.h b/mm.h
+index 87c50cb..6d652ce 100644
+--- a/mm.h
++++ b/mm.h
+@@ -18,6 +18,16 @@ uintptr_t get_program_break();
+ void set_program_break(uintptr_t new_break);
+ 
+ void map_with_reserved_page_table(uintptr_t base, uintptr_t size, uintptr_t ptr, pte* l2_pt, pte* l3_pt);
++uintptr_t
++map_page(uintptr_t vpn, uintptr_t phys_ppn, int flags);
++size_t
++map_pages(uintptr_t vpn, uintptr_t phys_ppn, size_t count, int flags);
++uintptr_t
++enclave_map(uintptr_t base_addr, size_t base_size, uintptr_t ptr);
++void copy_root_page_table();
++void remap_kernel_space(uintptr_t runtime_base, uintptr_t runtime_size);
++void map_untrusted_memory(uintptr_t base, uintptr_t size);
+ #endif /* USE_FREEMEM */
+ 
++
+ #endif /* _MM_H_ */
+diff --git a/rt_util.c b/rt_util.c
+index 66743e2..289732e 100644
+--- a/rt_util.c
++++ b/rt_util.c
+@@ -5,7 +5,9 @@
+ #include "mm.h"
+ #include "rt_util.h"
+ #include "printf.h"
++#include "string.h"
+ #include "uaccess.h"
++#include "freemem.h"
+ #include "vm.h"
+ 
+ // Statically allocated copy-buffer
+@@ -59,6 +61,7 @@ void rt_page_fault(struct encl_ctx* ctx)
+   pc = ctx->regs.sepc;
+   addr = ctx->sbadaddr;
+   cause = ctx->scause;
++  // printf("[runtime] page fault at 0x%lx on 0x%lx (scause: 0x%lx), paddr: %p, pte: %p\r\n", pc, addr, cause, (void *) kernel_va_to_pa((void *) addr), (pte_of_va(addr)));
+   printf("[runtime] page fault at 0x%lx on 0x%lx (scause: 0x%lx)\r\n", pc, addr, cause);
+ #endif
+ 
+@@ -69,6 +72,53 @@ void rt_page_fault(struct encl_ctx* ctx)
+   return;
+ }
+ 
++extern void copy_physical_page(uintptr_t dst, uintptr_t src, uintptr_t helper);
++extern void __copy_physical_page_switch_to_pa();
++void
++cow_relocate(pte* root, uintptr_t addr) {
++  pte* t = root;
++  int i;
++  for (i = 1; i < RISCV_PT_LEVELS + 1; i++)
++  {
++    size_t idx = RISCV_GET_PT_INDEX(addr, i);
++
++    if (!(t[idx] & PTE_V))
++      debug("copy on write failed to relocate: page not valid!");
++
++    uintptr_t pa = pte_ppn (t[idx]) << RISCV_PAGE_BITS;
++    /* if the page is outside of the EPM, relocate */
++    if (pa < load_pa_start || pa >= load_pa_start + load_pa_size)
++    {
++      uintptr_t new_page = spa_get_zero();
++      assert(new_page);
++
++      debug("PA 0x%lx is outside of EPM! Moving to 0x%lx", pa, __pa(new_page));
++      copy_physical_page(
++          __pa(new_page), pa,
++          kernel_va_to_pa(__copy_physical_page_switch_to_pa));
++
++      unsigned long free_ppn = ppn(__pa(new_page));
++      t[idx] = pte_create(free_ppn, t[idx]);
++    }
++
++    t = (pte*) __va(pte_ppn(t[idx]) << RISCV_PAGE_BITS);
++  }
++
++  return;
++}
++
++void
++handle_copy_on_write(struct encl_ctx* ctx) {
++  debug("copy on write called at pc = 0x%lx, VA = 0x%lx",
++      ctx->regs.sepc, ctx->sbadaddr);
++
++  cow_relocate(root_page_table, ctx->sbadaddr);
++
++  debug("copy on write relocated page to 0x%lx", translate(ctx->sbadaddr));
++
++  return;
++}
++
+ void tlb_flush(void)
+ {
+   __asm__ volatile("fence.i\t\nsfence.vma\t\n");
+diff --git a/rt_util.h b/rt_util.h
+index a565773..fa2f4a0 100644
+--- a/rt_util.h
++++ b/rt_util.h
+@@ -13,6 +13,7 @@ void not_implemented_fatal(struct encl_ctx* ctx);
+ void rt_util_misc_fatal();
+ void rt_page_fault(struct encl_ctx* ctx);
+ void tlb_flush(void);
++void handle_copy_on_write(struct encl_ctx* ctx);
+ 
+ extern unsigned char rt_copy_buffer_1[RISCV_PAGE_SIZE];
+ extern unsigned char rt_copy_buffer_2[RISCV_PAGE_SIZE];
+diff --git a/runtime.lds b/runtime.lds
+index aaec025..ee0e6bd 100644
+--- a/runtime.lds
++++ b/runtime.lds
+@@ -19,6 +19,7 @@ SECTIONS
+   .bss : { *(.bss) }
+   . = ALIGN(0x1000);
+   .kernel_stack : {
++    PROVIDE(kernel_stack_start = .);
+     . += 0x8000;
+     PROVIDE(kernel_stack_end = .);
+   }
+diff --git a/sbi.c b/sbi.c
+index 97506f2..17d6d97 100644
+--- a/sbi.c
++++ b/sbi.c
+@@ -1,9 +1,9 @@
+ #include "sbi.h"
+-
++#include "rt_util.h"
+ #include "vm_defs.h"
+-
+-#define SBI_EXT_EXPERIMENTAL_KEYSTONE_ENCLAVE 0x08424b45
+-
++#include "vm.h"
++#include "mm.h"
++#include "freemem.h"
+ #define SBI_CALL(___ext, ___which, ___arg0, ___arg1, ___arg2)    \
+   ({                                                             \
+     register uintptr_t a0 __asm__("a0") = (uintptr_t)(___arg0);  \
+@@ -76,3 +76,94 @@ uintptr_t
+ sbi_get_sealing_key(uintptr_t key_struct, uintptr_t key_ident, uintptr_t len) {
+   return SBI_CALL_3(SBI_EXT_EXPERIMENTAL_KEYSTONE_ENCLAVE, SBI_SM_GET_SEALING_KEY, key_struct, key_ident, len);
+ }
++
++extern void rtbreakpoint();
++
++
++extern uintptr_t rt_trap_table;
++uintptr_t
++sbi_snapshot()
++{
++  static bool is_first_time_snapshot = true;
++  uintptr_t pc = kernel_va_to_pa(&boot_cloned_enclave);
++  uintptr_t* trap_table = &rt_trap_table;
++  trap_table[RISCV_EXCP_STORE_FAULT] = (uintptr_t) handle_copy_on_write;
++
++  if (is_first_time_snapshot) {
++    snapshot_trampoline(pc);
++  } else {
++    // TODO we don't need to pass pc
++    SBI_CALL_1(SBI_EXT_EXPERIMENTAL_KEYSTONE_ENCLAVE, SBI_SM_SNAPSHOT, 0);
++  }
++
++  register uintptr_t a0 __asm__ ("a0"); /* dram base */
++  register uintptr_t a1 __asm__ ("a1"); /* dram size */
++  register uintptr_t a2 __asm__ ("a2"); /* utm base */
++  register uintptr_t a3 __asm__ ("a3"); /* utm size */
++  register uintptr_t a4 __asm__ ("a4"); /* next free page */
++  register uintptr_t a5 __asm__ ("a5"); /* retval */
++
++  // if we aren't going to do remap
++  if (a0 == 0) {
++    return 1;
++  }
++
++  uintptr_t dram_base, dram_size, next_free, utm_base, utm_size, retval;
++
++  dram_base = a0;
++  dram_size = a1;
++  utm_base = a2;
++  utm_size = a3;
++  next_free = a4;
++  retval = a5;
++
++  debug("returning from snapshot");
++  debug("dram range: %lx - %lx (size: %lx)", dram_base, dram_base + dram_size, dram_size);
++  debug("next_free: %lx", next_free);
++
++  uintptr_t runtime_paddr = dram_base + 3*(1<<RISCV_PAGE_BITS);
++
++  freemem_va_start = EYRIE_LOAD_START + (next_free - dram_base);
++  freemem_size = (dram_base + dram_size) - next_free;
++  debug("freemem start = %lx", freemem_va_start);
++  debug("freemem size = %d", freemem_size);
++
++  /* remap kernel */
++  //remap_kernel_space(runtime_paddr, 0x1a000);
++
++  /* update parameters */
++  load_pa_start = dram_base;
++  load_pa_size = dram_size;
++  kernel_offset = runtime_va_start - runtime_paddr;
++
++  if (!is_first_time_snapshot) {
++    map_untrusted_memory(utm_base, utm_size);
++    return retval;
++  }
++
++  is_first_time_snapshot = false;
++
++  /* remap physical memory */
++  remap_kernel_space(runtime_paddr, runtime_size);
++  map_with_reserved_page_table(dram_base, dram_size, EYRIE_LOAD_START, load_l2_page_table, load_l3_page_table);
++
++  csr_write(satp, satp_new(kernel_va_to_pa(root_page_table)));
++
++  copy_root_page_table();
++  tlb_flush();
++
++  debug("root_page_table (walk) = %lx", translate((uintptr_t)root_page_table));
++
++  debug("runtime_paddr = %lx", kernel_va_to_pa(&rt_base));
++  debug("runtime_paddr(walk) = %lx", translate((uintptr_t)&rt_base));
++  debug("free_pa = %lx", __pa(freemem_va_start));
++  debug("free_pa(walk) = %lx", translate(freemem_va_start));
++  debug("load start (pa) = %lx", translate(EYRIE_LOAD_START));
++  debug("retval = %lx", retval);
++
++  map_untrusted_memory(utm_base, utm_size);
++
++  /* re-init freemem */
++  spa_init(freemem_va_start, freemem_size);
++  return retval;
++}
+diff --git a/sbi.h b/sbi.h
+index b3dffd0..fac2996 100644
+--- a/sbi.h
++++ b/sbi.h
+@@ -12,15 +12,19 @@
+ #define SBI_CONSOLE_PUTCHAR 1
+ #define SBI_CONSOLE_GETCHAR 2
+ 
++#define SBI_EXT_EXPERIMENTAL_KEYSTONE_ENCLAVE 0x08424b45
++
+ #define SBI_SM_CREATE_ENCLAVE    2001
+ #define SBI_SM_DESTROY_ENCLAVE   2002
+ #define SBI_SM_RUN_ENCLAVE       2003
+ #define SBI_SM_RESUME_ENCLAVE    2005
++#define SBI_SM_CLONE_ENCLAVE     2006
+ #define SBI_SM_RANDOM            3001
+ #define SBI_SM_ATTEST_ENCLAVE    3002
+ #define SBI_SM_GET_SEALING_KEY   3003
+ #define SBI_SM_STOP_ENCLAVE      3004
+ #define SBI_SM_EXIT_ENCLAVE      3006
++#define SBI_SM_SNAPSHOT          3007
+ #define SBI_SM_CALL_PLUGIN       4000
+ 
+ /* Plugin IDs and Call IDs */
+@@ -28,6 +32,17 @@
+ #define SM_MULTIMEM_CALL_GET_SIZE 0x01
+ #define SM_MULTIMEM_CALL_GET_ADDR 0x02
+ 
++#define SBI_STOP_REQ_INTERRUPTED  0
++#define SBI_STOP_REQ_EDGE_CALL    1
++#define SBI_STOP_REQ_CLONE        2
++
++struct sbi_snapshot_ret {
++    uintptr_t utm_paddr;
++    uintptr_t utm_size;
++    uintptr_t dram_base;
++    uintptr_t dram_size;
++};
++
+ void
+ sbi_putchar(char c);
+ void
+@@ -46,5 +61,7 @@ uintptr_t
+ sbi_attest_enclave(void* report, void* buf, uintptr_t len);
+ uintptr_t
+ sbi_get_sealing_key(uintptr_t key_struct, uintptr_t key_ident, uintptr_t len);
+-
++uintptr_t sbi_snapshot();
++extern uintptr_t snapshot_trampoline(uintptr_t boot_pc);
++extern void boot_cloned_enclave();
+ #endif
+diff --git a/string.c b/string.c
+index 96e659f..3375078 100644
+--- a/string.c
++++ b/string.c
+@@ -1,4 +1,5 @@
+ #include "string.h"
++#include "printf.h"
+ 
+ /* TODO This is a temporary place to put libc functionality until we
+  * decide on a lib to provide such functionality to the runtime */
+@@ -11,9 +12,13 @@ void* memcpy(void* dest, const void* src, size_t len)
+   const char* s = src;
+   char *d = dest;
+ 
++  printf("%p, %p\n", d, s); 
++
+   if ((((uintptr_t)dest | (uintptr_t)src) & (sizeof(uintptr_t)-1)) == 0) {
+     while ((void*)d < (dest + len - (sizeof(uintptr_t)-1))) {
++      printf("%d, %d\n", *d, *s); 
+       *(uintptr_t*)d = *(const uintptr_t*)s;
++      printf("%d, %d\n", *d, *s); 
+       d += sizeof(uintptr_t);
+       s += sizeof(uintptr_t);
+     }
+diff --git a/syscall.c b/syscall.c
+index 343616e..39ab728 100644
+--- a/syscall.c
++++ b/syscall.c
+@@ -34,16 +34,15 @@ uintptr_t dispatch_edgecall_syscall(struct edge_syscall* syscall_data_ptr, size_
+   // Syscall data should already be at the edge_call_data section
+   /* For now we assume by convention that the start of the buffer is
+    * the right place to put calls */
+-  struct edge_call* edge_call = (struct edge_call*)shared_buffer;
++  struct edge_call* edge_call = (struct edge_call*) shared_buffer;
+ 
+   edge_call->call_id = EDGECALL_SYSCALL;
+ 
+-
+   if(edge_call_setup_call(edge_call, (void*)syscall_data_ptr, data_len) != 0){
+     return -1;
+   }
+ 
+-  ret = sbi_stop_enclave(1);
++  ret = sbi_stop_enclave(SBI_STOP_REQ_EDGE_CALL);
+ 
+   if (ret != 0) {
+     return -1;
+@@ -80,6 +79,7 @@ uintptr_t dispatch_edgecall_ocall( unsigned long call_id,
+    * dispatch the ocall to host */
+ 
+   edge_call->call_id = call_id;
++
+   uintptr_t buffer_data_start = edge_call_data_ptr();
+ 
+   if(data_len > (shared_buffer_size - (buffer_data_start - shared_buffer))){
+@@ -92,7 +92,7 @@ uintptr_t dispatch_edgecall_ocall( unsigned long call_id,
+     goto ocall_error;
+   }
+ 
+-  ret = sbi_stop_enclave(1);
++  ret = sbi_stop_enclave(SBI_STOP_REQ_EDGE_CALL);
+ 
+   if (ret != 0) {
+     goto ocall_error;
+@@ -208,6 +208,30 @@ void handle_syscall(struct encl_ctx* ctx)
+     memset(rt_copy_buffer_1, 0x00, sizeof(rt_copy_buffer_1));
+ 
+     break;
++  case(SYSCALL_SNAPSHOT):;
++    print_strace("[runtime] snapshot \r\n");
++    // struct sbi_snapshot_ret snapshot_ret;
++    //uintptr_t pa_snapshot_ret = kernel_va_to_pa(&snapshot_ret);
++
++    ret = sbi_snapshot();
++
++    //0xffffffffc0009018
++    //load_pa_child_start = snapshot_ret.dram_base;
++
++    //printf("Snapshot: utm_base: %p, size: %d, shared_buffer: %p, shared_buffer_size: %d\n", snapshot_ret.utm_paddr,snapshot_ret.utm_size,
++    //shared_buffer, shared_buffer_size);
++
++    // pte *p;
++
++    // //Remaps UTM to new UTM
++    // for(int i = 0; i < PAGE_UP(snapshot_ret.utm_size)/RISCV_PAGE_SIZE; i++){
++    //     p = pte_of_va(shared_buffer + i * RISCV_PAGE_SIZE);
++    //     *p = pte_create(ppn(snapshot_ret.utm_paddr + i * RISCV_PAGE_SIZE), PTE_R | PTE_W | PTE_X | PTE_A | PTE_D);
++    // }
++
++
++    break;
++
+ 
+ 
+ #ifdef LINUX_SYSCALL_WRAPPING
+@@ -257,6 +281,12 @@ void handle_syscall(struct encl_ctx* ctx)
+     print_strace("[runtime] exit or exit_group (%lu)\r\n",n);
+     sbi_exit_enclave(arg0);
+     break;
++
++  case(SYS_clone):
++    print_strace("[runtime] clone\r\n");
++    ret = sbi_snapshot();
++    // sbi_stop_enclave(SBI_STOP_REQ_CLONE);
++    break;
+ #endif /* LINUX_SYSCALL_WRAPPING */
+ 
+ #ifdef IO_SYSCALL_WRAPPING
+@@ -281,8 +311,8 @@ void handle_syscall(struct encl_ctx* ctx)
+   case(SYS_fstatat):
+     ret = io_syscall_fstatat((int)arg0, (char*)arg1, (struct stat*)arg2, (int)arg3);
+     break;
+-  case(SYS_fstat): 
+-    ret = io_syscall_fstat((int)arg0, (struct stat*)arg1); 
++  case(SYS_fstat):
++    ret = io_syscall_fstat((int)arg0, (struct stat*)arg1);
+     break;
+   case(SYS_lseek):
+     ret = io_syscall_lseek((int)arg0, (off_t)arg1, (int)arg2);
+@@ -300,28 +330,28 @@ void handle_syscall(struct encl_ctx* ctx)
+     ret = io_syscall_close((int)arg0);
+     break;
+   case(SYS_epoll_create1):
+-    ret = io_syscall_epoll_create((int) arg0); 
++    ret = io_syscall_epoll_create((int) arg0);
+     break;
+   case(SYS_epoll_ctl):
+-    ret = io_syscall_epoll_ctl((int) arg0, (int) arg1, (int) arg2, (uintptr_t) arg3); 
++    ret = io_syscall_epoll_ctl((int) arg0, (int) arg1, (int) arg2, (uintptr_t) arg3);
+     break;
+   case(SYS_epoll_pwait):
+-    ret = io_syscall_epoll_pwait((int) arg0, (uintptr_t) arg1, (int) arg2, (int) arg3); 
++    ret = io_syscall_epoll_pwait((int) arg0, (uintptr_t) arg1, (int) arg2, (int) arg3);
+     break;
+-  case(SYS_fcntl): 
++  case(SYS_fcntl):
+     ret = io_syscall_fcntl((int)arg0, (int)arg1, (uintptr_t)arg2);
+     break;
+-  case(SYS_chdir): 
++  case(SYS_chdir):
+     ret = io_syscall_chdir((char *) arg0);
+     break;
+-  case(SYS_renameat2): 
++  case(SYS_renameat2):
+     ret = io_syscall_renameat2((int) arg0, (uintptr_t) arg1,  (int) arg2, (uintptr_t) arg3, (int) arg4);
+     break;
+-  case(SYS_umask): 
++  case(SYS_umask):
+     ret = io_syscall_umask((int) arg0);
+     break;
+-  case(SYS_getcwd): 
+-    ret = io_syscall_getcwd((char *)arg0, (size_t)arg1); 
++  case(SYS_getcwd):
++    ret = io_syscall_getcwd((char *)arg0, (size_t)arg1);
+     break;
+   case(SYS_pipe2):
+     ret = io_syscall_pipe((int*)arg0);
+@@ -331,11 +361,11 @@ void handle_syscall(struct encl_ctx* ctx)
+ 
+ #ifdef NET_SYSCALL_WRAPPING
+   case(SYS_socket):
+-    ret = io_syscall_socket((int) arg0, (int) arg1, (int) arg2); 
+-    break; 
++    ret = io_syscall_socket((int) arg0, (int) arg1, (int) arg2);
++    break;
+   case(SYS_setsockopt):
+-    ret = io_syscall_setsockopt((int) arg0, (int) arg1, (int) arg2, (int *) arg3, (int) arg4); 
+-    break; 
++    ret = io_syscall_setsockopt((int) arg0, (int) arg1, (int) arg2, (int *) arg3, (int) arg4);
++    break;
+   case (SYS_bind):
+     ret = io_syscall_bind((int) arg0, (uintptr_t) arg1, (int) arg2);
+     break;
+@@ -354,16 +384,16 @@ void handle_syscall(struct encl_ctx* ctx)
+   case(SYS_sendfile):
+     ret = io_syscall_sendfile((int) arg0, (int) arg1, (uintptr_t) arg2, (int) arg3);
+     break;
+-  case(SYS_getpeername): 
++  case(SYS_getpeername):
+     ret = io_syscall_getpeername((int) arg0,  (uintptr_t) arg1, (uintptr_t) arg2);
+     break;
+-  case(SYS_getsockname): 
++  case(SYS_getsockname):
+     ret = io_syscall_getsockname((int) arg0,  (uintptr_t) arg1, (uintptr_t) arg2);
+     break;
+-  case(SYS_getuid): 
+-    ret = io_syscall_getuid(); 
+-    break; 
+-  case(SYS_pselect6): 
++  case(SYS_getuid):
++    ret = io_syscall_getuid();
++    break;
++  case(SYS_pselect6):
+     ret = io_syscall_pselect((int) arg0, (uintptr_t) arg1, (uintptr_t) arg2, (uintptr_t) arg3, (uintptr_t) arg4, (uintptr_t) arg5);
+     break;
+ #endif /* NET_SYSCALL_WRAPPING */
+diff --git a/syscall.h b/syscall.h
+index 1edcb13..649e889 100644
+--- a/syscall.h
++++ b/syscall.h
+@@ -15,6 +15,8 @@
+ #define RUNTIME_SYSCALL_SHAREDCOPY          1002
+ #define RUNTIME_SYSCALL_ATTEST_ENCLAVE      1003
+ #define RUNTIME_SYSCALL_GET_SEALING_KEY     1004
++#define SYSCALL_SNAPSHOT                    1005
++#define SYSCALL_CLONE                       1006
+ #define RUNTIME_SYSCALL_EXIT                1101
+ 
+ void handle_syscall(struct encl_ctx* ctx);
+diff --git a/trampoline.S b/trampoline.S
+new file mode 100644
+index 0000000..5b90811
+--- /dev/null
++++ b/trampoline.S
+@@ -0,0 +1,343 @@
++#include <asm/csr.h>
++
++#define SBI_EXT_EXPERIMENTAL_KEYSTONE_ENCLAVE 0x08424b45
++#define SBI_SM_SNAPSHOT          3007
++#define SBI_SM_EXIT_ENCLAVE      3006
++#define PTE_PPN_SHIFT 10
++
++#if __riscv_xlen == 64
++#define STORE sd
++#define LOAD ld
++#define LOG_REGBYTES  3
++#define WORD .dword
++#elif __riscv_xlen == 32
++#define STORE sw
++#define LOAD lw
++#define LOG_REGBYTES  2
++#define WORD .word
++#endif
++
++#define LWU lwu
++#define REGBYTES (1<<LOG_REGBYTES)
++#define ENCL_CONTEXT_SIZE (REGBYTES*35)
++#define HOST_CONTEXT_SIZE (REGBYTES*32)
++#define PAGE_SHIFT  12
++#define PAGE_SIZE (1<<PAGE_SHIFT)
++
++snapshot_trampoline:
++  .global snapshot_trampoline
++  addi sp, sp, (-14*REGBYTES)
++  STORE s0, 0*REGBYTES(sp)
++  STORE s1, 1*REGBYTES(sp)
++  STORE s2, 2*REGBYTES(sp)
++  STORE s3, 3*REGBYTES(sp)
++  STORE s4, 4*REGBYTES(sp)
++  STORE s5, 5*REGBYTES(sp)
++  STORE s6, 6*REGBYTES(sp)
++  STORE s7, 7*REGBYTES(sp)
++  STORE s8, 8*REGBYTES(sp)
++  STORE s9, 9*REGBYTES(sp)
++  STORE s10, 10*REGBYTES(sp)
++  STORE s11, 11*REGBYTES(sp)
++  STORE ra, 12*REGBYTES(sp)
++  // also store sstatus
++  csrr t0, sstatus
++  STORE t0, 13*REGBYTES(sp)
++
++  // change stvec to the dummy access fault handler
++  la t0, first_page_fault
++  csrw stvec, t0
++  // store original satp
++  csrr s4, satp
++  // store VA for resume
++  la s5, resume_with_virtual_address
++  // call snapshot() sbi
++  li a7, SBI_EXT_EXPERIMENTAL_KEYSTONE_ENCLAVE
++  li a6, SBI_SM_SNAPSHOT
++
++/* this includes the ecall instruction because mepc = PC + 4 */
++boot_cloned_enclave:
++.global boot_cloned_enclave
++  ecall
++  // Now, we're starting a new enclave
++  // s4: original satp
++  // a0: dram base --> s0
++  // a1: dram size --> s1
++  // a2: utm base --> s2
++  // a3: utm size --> s3
++  // store all of them to saved registers (s4 is already there)
++  // s6: current free list
++
++  add s0, a0, x0
++  add s1, a1, x0
++  add s2, a2, x0
++  add s3, a3, x0
++  mv s6, s0
++
++  // copy root page table
++  // (s4 << PAGE_SHIFT) to get original root page table PA
++  slli a7, s4, PAGE_SHIFT
++  jal ra, copy_page_a7 /* uses t0, t1, t2, t3 */
++
++  // remap kernel
++  // start: rt_base
++  // end: kernel_stack_end
++  la t5, rt_base
++  la t6, kernel_stack_end // # of pages for the kernel
++  sub t6, t6, t5
++  srli t6, t6, PAGE_SHIFT
++  li s11, 0x0 // # of stack pages mapped
++__map_stack_page:
++  beq t6, s11, snapshot_trampoline_exit
++  slli a0, s11, PAGE_SHIFT
++  add a0, t5, a0
++  j relocate_virtual_page_a0
++__ra_relocate_virtual_page_a0:
++  addi s11, s11, 1
++  j __map_stack_page
++
++/*******************************/
++/* uses: t0-t4 */
++relocate_virtual_page_a0:
++  // a0: virtual page address to relocate
++  // t0 = L1 page table (dram base)
++  mv t0, s0
++
++  // t1 = L1 index * 8
++  mv t1, a0
++  srli t1, t1, 30
++  li t4, 0x1ff
++  and t1, t1, t4
++  slli t1, t1, 3
++
++  // s9 = L1 PTE
++  // s10 = pointer to the PTE
++  add s10, t0, t1
++  LOAD s9, 0(s10)
++
++  // see if PTE is already pointing to EPM
++  // t0 = (PTE >> 10) << 12
++  srli t0, s9, PTE_PPN_SHIFT
++  slli t0, t0, PAGE_SHIFT
++  blt t0, s0, __not_in_epm_l1
++  add t1, s0, s1
++  bge t0, t1, __not_in_epm_l1
++  // otherwise just go to next level with t0 set
++  j __relocate_virtual_page_l2
++__not_in_epm_l1:
++
++  mv a7, t0
++  /* uses t0, t1, t2, t3 */
++  jal ra, copy_page_a7
++  // a7 now contains new page address
++  andi s9, s9, 0x3ff
++
++  // t0 = L2 page table
++  mv t0, a7
++  srli a7, a7, 12
++  slli a7, a7, 10
++  or a7, a7, s9
++  // a7 = new PTE
++  STORE a7, 0(s10)
++
++__relocate_virtual_page_l2:
++  // t0 = L2 page table (^ previous)
++  // t1 = L2 index * 8
++  mv t1, a0
++  srli t1, t1, 21
++  li t4, 0x1ff
++  and t1, t1, t4
++  slli t1, t1, 3
++
++  // s9 = L2 PTE
++  // s10 = pointer to the PTE
++  add s10, t0, t1
++  LOAD s9, 0(s10)
++
++  // see if PTE is a mega page
++  and t4, s9, 0xE // RWX mask
++  bne t4, x0, l2_is_megapage // RWX != 0 means it's megapage
++
++  // see if PTE is already pointing to EPM
++  // t0 = (PTE >> 10) << 12
++  srli t0, s9, PTE_PPN_SHIFT
++  slli t0, t0, PAGE_SHIFT
++  blt t0, s0, __not_in_epm_l2
++  add t1, s0, s1
++  bge t0, t1, __not_in_epm_l2
++  // otherwise just go to next level with t0 set
++  j __relocate_virtual_page_l3
++__not_in_epm_l2:
++  mv a7, t0
++  /* uses t0, t1, t2, t3 */
++  jal ra, copy_page_a7
++  mv t0, a7
++  andi s9, s9, 0x3ff
++  srli a7, a7, 12
++  slli a7, a7, 10
++  or a7, a7, s9
++  STORE a7, 0(s10)
++
++__relocate_virtual_page_l3:
++  // t0 = L3 page table (^ previous)
++  // t1 = L3 index * 8
++  mv t1, a0
++  srli t1, t1, 12
++  li t4, 0x1ff
++  and t1, t1, t4
++  slli t1, t1, 3
++
++  // s9 = L3 PTE
++  // s10 = pointer to the PTE
++  add s10, t0, t1
++  LOAD s9, 0(s10)
++
++  srli t0, s9, PTE_PPN_SHIFT
++  slli t0, t0, PAGE_SHIFT
++
++  mv a7, t0
++  jal ra, copy_page_a7
++  andi s9, s9, 0x3ff
++  srli a7, a7, 12
++  slli a7, a7, 10
++  or a7, a7, s9
++  STORE a7, 0(s10)
++  j __ra_relocate_virtual_page_a0
++
++l2_is_megapage:
++  //TODO
++  li a0, -1234
++  li a7, SBI_EXT_EXPERIMENTAL_KEYSTONE_ENCLAVE
++  li a6, SBI_SM_EXIT_ENCLAVE
++  ecall
++
++/* relocate virtual page end */
++
++/* copy a page from a7 into s6 and increment s6 by 4K */
++/* uses t0, t1, t2, t3 */
++copy_page_a7:
++  // s6: dst PA
++  // a7: src PA
++  li t0, PAGE_SIZE
++  mv t1, x0
++__copy_page_loop:
++  bge t1, t0, __copy_page_done
++  add t2, a7, t1
++  LOAD t3, 0(t2)
++  add t2, s6, t1
++  STORE t3, 0(t2)
++  addi t1, t1, REGBYTES
++  j __copy_page_loop
++__copy_page_done:
++  mv a7, s6
++  add s6, s6, t0
++  jalr x0, ra, 0
++
++snapshot_trampoline_exit:
++  // update satp (retain mode)
++  srli t1, s4, 44
++  slli t1, t1, 44
++  srli t0, s0, PAGE_SHIFT
++  or t1, t1, t0
++  sfence.vma
++  csrw satp, t1
++resume_with_virtual_address:
++  mv a0, s0 /* dram base */
++  mv a1, s1 /* dram size */
++  mv a2, s2 /* utm base */
++  mv a3, s3 /* utm size */
++  mv a4, s6 /* free page start */
++  LOAD s0, 0*REGBYTES(sp)
++  LOAD s1, 1*REGBYTES(sp)
++  LOAD s2, 2*REGBYTES(sp)
++  LOAD s3, 3*REGBYTES(sp)
++  LOAD s4, 4*REGBYTES(sp)
++  LOAD s5, 5*REGBYTES(sp)
++  LOAD s6, 6*REGBYTES(sp)
++  LOAD s7, 7*REGBYTES(sp)
++  LOAD s8, 8*REGBYTES(sp)
++  LOAD s9, 9*REGBYTES(sp)
++  LOAD s10, 10*REGBYTES(sp)
++  LOAD s11, 11*REGBYTES(sp)
++  LOAD ra, 12*REGBYTES(sp)
++  LOAD t0, 13*REGBYTES(sp)
++  // also restore sstatus
++  csrw sstatus, t0
++  addi sp, sp, (14*REGBYTES)
++  ret
++
++
++copy_physical_page:
++  .global copy_physical_page
++  // a0: dst (pa)
++  // a1: src (pa)
++  // a2: __copy_physical_page_switch_to_pa (pa)
++
++  /* VA */
++  addi sp, sp, -(4*REGBYTES)
++  STORE s0, 0*REGBYTES(sp)
++  STORE s5, 1*REGBYTES(sp)
++  csrr t0, sstatus
++  STORE t0, 2*REGBYTES(sp)
++  STORE ra, 3*REGBYTES(sp)
++
++  // s0 = original satp
++  csrr s0, satp
++
++  // s5 = __copy_phyiscal_page_switch_to_va (va)
++  la s5, __copy_physical_page_switch_to_va
++
++  // switch stvec
++  csrw stvec, a2
++
++  sfence.vma
++  csrw satp, x0
++
++  /* PA */
++.align 2
++__copy_physical_page_switch_to_pa:
++  .global __copy_physical_page_switch_to_pa
++  // change stvec to the dummy access fault handler
++
++  jal ra, copy_page_pa
++
++  la t0, first_page_fault
++  csrw stvec, t0
++  sfence.vma
++  csrw satp, s0
++
++__copy_physical_page_switch_to_va:
++  LOAD ra, 3*REGBYTES(sp)
++  LOAD t0, 2*REGBYTES(sp)
++  csrw sstatus, t0
++  LOAD s5, 1*REGBYTES(sp)
++  LOAD s0, 0*REGBYTES(sp)
++  addi sp, sp, (4*REGBYTES)
++  ret
++
++/* copy a page from a1 into a0 (PA) */
++copy_page_pa:
++/* uses t0, t1, t2, t3 */
++  // a0: dst PA
++  // a1: src PA
++  li t0, PAGE_SIZE
++  mv t1, x0
++__copy_page_pa_loop:
++  bge t1, t0, __copy_page_pa_done
++  add t2, a1, t1
++  LOAD t3, 0(t2)
++  add t2, a0, t1
++  STORE t3, 0(t2)
++  addi t1, t1, REGBYTES
++  j __copy_page_pa_loop
++__copy_page_pa_done:
++  jalr x0, ra, 0
++
++
++/* first fault handler after switching SATP */
++.align 3
++first_page_fault:
++  la t0, encl_trap_handler
++  csrw stvec, t0
++  jalr x0, s5, 0
++
+diff --git a/vm.c b/vm.c
+index 4a02e0d..cf192ef 100644
+--- a/vm.c
++++ b/vm.c
+@@ -1,8 +1,10 @@
+ #include "vm.h"
+ 
+ uintptr_t runtime_va_start;
++uintptr_t runtime_size;
+ uintptr_t kernel_offset;
+ uintptr_t load_pa_start;
++uintptr_t load_pa_size;
+ 
+ #ifdef USE_FREEMEM
+ /* root page table */
+@@ -13,6 +15,10 @@ pte kernel_l3_page_table[BIT(RISCV_PT_INDEX_BITS)] __attribute__((aligned(RISCV_
+ /* page tables for loading physical memory */
+ pte load_l2_page_table[BIT(RISCV_PT_INDEX_BITS)] __attribute__((aligned(RISCV_PAGE_SIZE)));
+ pte load_l3_page_table[BIT(RISCV_PT_INDEX_BITS)] __attribute__((aligned(RISCV_PAGE_SIZE)));
++/* page tables for loading untrusted memory */
++pte utm_l2_page_table[BIT(RISCV_PT_INDEX_BITS)] __attribute__((aligned(RISCV_PAGE_SIZE)));
++pte utm_l3_page_table[BIT(RISCV_PT_INDEX_BITS)] __attribute__((aligned(RISCV_PAGE_SIZE)));
++
+ 
+ /* Program break */
+ uintptr_t program_break;
+diff --git a/vm.h b/vm.h
+index af2a638..9e7220d 100644
+--- a/vm.h
++++ b/vm.h
+@@ -10,8 +10,10 @@
+ extern void* rt_base;
+ 
+ extern uintptr_t runtime_va_start;
++extern uintptr_t runtime_size;
+ extern uintptr_t kernel_offset;
+ extern uintptr_t load_pa_start;
++extern uintptr_t load_pa_size;
+ 
+ /* Eyrie is for Sv39 */
+ static inline uintptr_t satp_new(uintptr_t pa)
+@@ -73,6 +75,9 @@ extern pte kernel_l3_page_table[];
+ /* page tables for loading physical memory */
+ extern pte load_l2_page_table[];
+ extern pte load_l3_page_table[];
++/* page tables for UTM */
++extern pte utm_l2_page_table[];
++extern pte utm_l3_page_table[];
+ 
+ /* Program break */
+ extern uintptr_t program_break;
+@@ -85,5 +90,4 @@ extern size_t freemem_size;
+ extern uintptr_t shared_buffer;
+ extern uintptr_t shared_buffer_size;
+ 
+-
+ #endif
+diff --git a/vm_defs.h b/vm_defs.h
+index e100e65..55cce35 100644
+--- a/vm_defs.h
++++ b/vm_defs.h
+@@ -60,6 +60,7 @@
+ #define PTE_G 0x020  // Global
+ #define PTE_A 0x040  // Accessed
+ #define PTE_D 0x080  // Dirty
++#define PTE_C 0x100  // Copy bit 
+ #define PTE_FLAG_MASK 0x3ff
+ #define PTE_PPN_SHIFT 10
+ 
