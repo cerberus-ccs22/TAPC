@@ -18,7 +18,7 @@ Thus, see diff.txt in each of the components to see the difference between the l
 ## How to Test
 
 * Follow [docs](https://docs.keystone-enclave.org) to setup initial Keystone repo.
-* Replace each of the components (sdk, sm, keystone-driver, keystone-runtime) with the ones that are provided in this repo
+* Replace each of the components (sdk, sm/src, keystone-driver, keystone-runtime) with the ones that are provided in this repo
 
 keystone-runtime is pulled from git repo, so we changed the URL in the [macro](https://github.com/anonymous1721/TAPC/tree/main/KeystoneImplementation/sdk/macros.cmake). This will download the correct version of Eyrie runtime.
 Make sure to remove `build/examples` directory entirely before re-compiling the apps with the modified runtime.
