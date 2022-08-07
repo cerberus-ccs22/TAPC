@@ -1,0 +1,41 @@
+# This is a general manifest template for running SQLite.
+
+loader.entrypoint = "file:{{ gramine.libos }}"
+libos.entrypoint = "darkhttpd-static"
+
+loader.log_level = "{{ log_level }}"
+
+loader.insecure__use_cmdline_argv = true
+
+loader.env.LD_LIBRARY_PATH = "/lib:{{ arch_libdir }}"
+loader.env.PATH = "{{ execdir }}"
+loader.env.HOME = "/"
+
+fs.mount.lib.type = "chroot"
+fs.mount.lib.path = "/lib"
+fs.mount.lib.uri = "file:{{ gramine.runtimedir() }}"
+
+fs.mount.lib64.type = "chroot"
+fs.mount.lib64.path = "{{ arch_libdir }}"
+fs.mount.lib64.uri = "file:{{ arch_libdir }}"
+
+fs.mount.sqlite3.type = "chroot"
+fs.mount.sqlite3.path = "{{ execdir }}/darkhttpd-static"
+fs.mount.sqlite3.uri = "file:{{ execdir }}/darkhttpd-static"
+
+sgx.debug = true
+sgx.enclave_size = "256M"
+sgx.thread_num = 4
+sgx.nonpie_binary = true
+
+sgx.trusted_files = [
+  "file:{{ gramine.libos }}",
+  "file:{{ execdir }}/darkhttpd-static",
+  "file:{{ gramine.runtimedir() }}/",
+  "file:{{ arch_libdir }}/",
+  "file:{{ execdir }}/index.html",
+]
+
+sgx.allowed_files = [
+  "file:{{ execdir }}/chinook.db",
+]

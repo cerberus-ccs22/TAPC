@@ -1,0 +1,13 @@
+#!/bin/bash
+#
+# Build with clang with all warnings.
+#
+TARGET=$(dirname $0)/../darkhttpd.c
+if [[ -z "$CLANG" ]]; then
+  CLANG="$(which clang)"
+fi
+"$CLANG" -Weverything -O \
+  -Wno-unreachable-code -Wno-padded -Wno-disabled-macro-expansion \
+  -Wno-reserved-id-macro \
+  -DDEBUG $TARGET
+rm -f a.out

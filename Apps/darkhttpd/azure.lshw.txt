@@ -1,0 +1,151 @@
+icelake-test
+    description: Desktop Computer
+    product: Virtual Machine (None)
+    vendor: Microsoft Corporation
+    version: Hyper-V UEFI Release v4.1
+    serial: 0000-0008-6542-8902-1173-7785-37
+    width: 64 bits
+    capabilities: smbios-3.1.0 dmi-3.1.0 vsyscall32
+    configuration: boot=normal chassis=desktop family=Virtual Machine sku=None uuid=03361A78-A02A-6948-AFD2-52F2C502BDCA
+  *-core
+       description: Motherboard
+       product: Virtual Machine
+       vendor: Microsoft Corporation
+       physical id: 0
+       version: Hyper-V UEFI Release v4.1
+       serial: 0000-0012-6692-7990-4387-4810-34
+       slot: Virtual Machine
+     *-firmware
+          description: BIOS
+          vendor: Microsoft Corporation
+          physical id: 0
+          version: Hyper-V UEFI Release v4.1
+          date: 07/22/2021
+          size: 1MiB
+          capabilities: acpi uefi virtualmachine
+     *-cpu
+          description: CPU
+          product: Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz
+          vendor: Intel Corp.
+          physical id: 4
+          bus info: cpu@0
+          version: Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz
+          serial: None
+          slot: None
+          size: 2800MHz
+          capacity: 3500MHz
+          width: 64 bits
+          clock: 100MHz
+          capabilities: lm fpu fpu_exception wp vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss syscall nx pdpe1gb rdtscp x86-64 constant_tsc rep_good nopl xtopology tsc_reliable nonstop_tsc cpuid aperfmperf pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch invpcid_single fsgsbase tsc_adjust sgx bmi1 hle avx2 smep bmi2 erms invpcid rtm avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx512vbmi umip avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq la57 rdpid sgx_lc fsrm arch_capabilities
+          configuration: cores=1 enabledcores=1 threads=1
+     *-memory
+          description: System Memory
+          physical id: 6
+          slot: System board or motherboard
+          size: 12GiB
+        *-bank:0
+             product: None
+             vendor: Microsoft Corporation
+             physical id: 0
+             serial: None
+             slot: M0001
+             size: 1GiB
+        *-bank:1
+             product: None
+             vendor: Microsoft Corporation
+             physical id: 1
+             serial: None
+             slot: M0002
+             size: 7GiB
+        *-bank:2
+             product: None
+             vendor: Microsoft Corporation
+             physical id: 2
+             serial: None
+             slot: M0003
+             size: 4GiB
+     *-network
+          description: Ethernet interface
+          product: MT27800 Family [ConnectX-5 Virtual Function]
+          vendor: Mellanox Technologies
+          physical id: 2
+          bus info: pci@7aa9:00:02.0
+          logical name: enP31401s1
+          version: 80
+          serial: 00:22:48:50:2d:fc
+          width: 64 bits
+          clock: 33MHz
+          capabilities: pciexpress msix bus_master cap_list ethernet physical autonegotiation
+          configuration: autonegotiation=on broadcast=yes driver=mlx5_core driverversion=5.11.0-1021-azure duplex=full firmware=16.30.1202 (MSF0000000012) latency=0 link=yes multicast=yes slave=yes
+          resources: iomemory:f0-ef irq:0 memory:fe0000000-fe00fffff
+     *-pnp00:00
+          product: PnP device PNP0501
+          physical id: 1
+          capabilities: pnp
+          configuration: driver=serial
+     *-pnp00:01
+          product: PnP device PNP0501
+          physical id: 3
+          capabilities: pnp
+          configuration: driver=serial
+     *-pnp00:02
+          product: PnP device PNP0b00
+          physical id: 5
+          capabilities: pnp
+          configuration: driver=rtc_cmos
+     *-scsi
+          physical id: 7
+          logical name: scsi0
+        *-disk
+             description: SCSI Disk
+             product: Virtual Disk
+             vendor: Msft
+             physical id: 0.0.0
+             bus info: scsi@0:0.0.0
+             logical name: /dev/sda
+             version: 1.0
+             size: 30GiB (32GB)
+             capabilities: gpt-1.00 partitioned partitioned:gpt
+             configuration: ansiversion=5 guid=05554388-c237-4cda-86ac-964687b74c5c logicalsectorsize=512 sectorsize=4096
+           *-volume:0
+                description: EXT4 volume
+                vendor: Linux
+                physical id: 1
+                bus info: scsi@0:0.0.0,1
+                logical name: /dev/sda1
+                logical name: /
+                version: 1.0
+                serial: 186289ca-3114-450e-a5ee-527980db3c48
+                size: 29GiB
+                capacity: 29GiB
+                capabilities: journaled extended_attributes large_files huge_files dir_nlink recover 64bit extents ext4 ext2 initialized
+                configuration: created=2021-11-21 21:43:18 filesystem=ext4 label=cloudimg-rootfs lastmountpoint=/ modified=2021-11-21 21:59:18 mount.fstype=ext4 mount.options=rw,relatime,discard mounted=2021-11-29 17:18:19 state=mounted
+           *-volume:1
+                description: BIOS Boot partition
+                vendor: EFI
+                physical id: e
+                bus info: scsi@0:0.0.0,14
+                logical name: /dev/sda14
+                serial: a707615c-aeb7-4253-bb63-813b121938b4
+                capacity: 4095KiB
+                capabilities: nofs
+           *-volume:2
+                description: Windows FAT volume
+                vendor: mkfs.fat
+                physical id: f
+                bus info: scsi@0:0.0.0,15
+                logical name: /dev/sda15
+                logical name: /boot/efi
+                version: FAT32
+                serial: d825-a6b0
+                size: 105MiB
+                capacity: 105MiB
+                capabilities: boot fat initialized
+                configuration: FATs=2 filesystem=fat label=UEFI mount.fstype=vfat mount.options=rw,relatime,fmask=0077,dmask=0077,codepage=437,iocharset=iso8859-1,shortname=mixed,errors=remount-ro state=mounted
+  *-network
+       description: Ethernet interface
+       physical id: 1
+       logical name: eth0
+       serial: 00:22:48:50:2d:fc
+       capabilities: ethernet physical autonegotiation
+       configuration: autonegotiation=on broadcast=yes driver=hv_netvsc driverversion=5.11.0-1021-azure duplex=full firmware=N/A ip=172.17.0.4 link=yes multicast=yes
