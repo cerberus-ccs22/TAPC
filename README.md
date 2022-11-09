@@ -1,6 +1,6 @@
-# Artifact for #220
+# Cerberus: A Formal Approach to Secure and Efficient Enclave Memory Sharing
 
-This is the artifacts of an anonymous submission #220 to CCS'22
+This is the artifacts of the paper ^
 
 ## Directory Structure
 
